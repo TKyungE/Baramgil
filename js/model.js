@@ -21,11 +21,13 @@
   };
   const ARROW_MIN_COS = 0.3; // 이보다 축에 비스듬하면(거의 가로지르면) 흐름 화살표를 그리지 않음
 
+  // 색: 단계가 셀수록 어두워지는(밝기 단조) 순서 배색 — 무지개식 배색은 크기 판단을 흐린다(Borland & Taylor 2007).
+  //     L* 79 → 70 → 55 → 34. text 는 흰 바탕 글자용 진한 색.
   const LEVELS = [
-    { key: 0, name: '잔잔', color: '#2e9a5f', max: 3.4 },
-    { key: 1, name: '주의', color: '#d8961c', max: 5.5 },
-    { key: 2, name: '강풍', color: '#d64a2f', max: 8.0 },
-    { key: 3, name: '위험', color: '#8a3aa8', max: Infinity }
+    { key: 0, name: '잔잔', color: '#86d3a6', text: '#2e8b57', max: 3.4 },
+    { key: 1, name: '주의', color: '#e0a020', text: '#a8700a', max: 5.5 },
+    { key: 2, name: '강풍', color: '#e2532a', text: '#b8401c', max: 8.0 },
+    { key: 3, name: '위험', color: '#7b2d8e', text: '#6a2380', max: Infinity }
   ];
   function level(speed) {
     for (const l of LEVELS) if (speed < l.max) return l;
@@ -110,10 +112,39 @@
     return self;
   }
 
-  /* 위치 기반 조회 (computed = localWind 결과가 합쳐진 길목 목록) */
-  function nearestChunk(computed, p, maxDist, excludeId) {
-    let best = null, bd = maxDist;
+  /* 위치 기반 조회 (computed = localWind 결과가 합쳐진 길목 목록)
+   * 격자 색인: 셀 0.0012도(약 105~135 m). 100 m 이내 조회는 주변 3×3 셀만 본다. */
+  const CELL = 0.0012;
+  function buildIndex(computed) {
+    const cells = new Map();
     for (const c of computed) {
+      let minx = Infinity, miny = Infinity, maxx = -Infinity, maxy = -Infinity;
+      for (const q of c.coords) { if (q[0] < minx) minx = q[0]; if (q[0] > maxx) maxx = q[0]; if (q[1] < miny) miny = q[1]; if (q[1] > maxy) maxy = q[1]; }
+      for (let x = Math.floor(minx / CELL); x <= Math.floor(maxx / CELL); x++)
+        for (let y = Math.floor(miny / CELL); y <= Math.floor(maxy / CELL); y++) {
+          const k = x + ',' + y;
+          if (!cells.has(k)) cells.set(k, []);
+          cells.get(k).push(c);
+        }
+    }
+    return cells;
+  }
+  function candidates(computed, p) {
+    const idx = computed._idx;
+    if (!idx) return computed;
+    const cx = Math.floor(p[0] / CELL), cy = Math.floor(p[1] / CELL);
+    const out = [];
+    for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) {
+      const a = idx.get((cx + dx) + ',' + (cy + dy));
+      if (a) for (const c of a) out.push(c);
+    }
+    return out;
+  }
+  function nearestChunk(computed, p, maxDist, excludeId) {
+    let best = null, bd = Math.min(maxDist, 100);
+    const seen = computed._idx ? new Set() : null;
+    for (const c of candidates(computed, p)) {
+      if (seen) { if (seen.has(c.id)) continue; seen.add(c.id); }
       if (excludeId && c.id === excludeId) continue;
       const d = Geo.distPointLine(p, c.coords);
       if (d < bd) { bd = d; best = c; }
@@ -137,7 +168,9 @@
       return null;
     }
     let best = null;
-    for (const c of computed) {
+    const seen = computed._idx ? new Set() : null;
+    for (const c of candidates(computed, pos)) {
+      if (seen) { if (seen.has(c.id)) continue; seen.add(c.id); }
       if (c.id === curId || c.level.key === cur.level.key) continue;
       const d = Geo.distPointLine(pos, c.coords);
       if (d <= o.nearRadius && (!best || d < best.dist)) best = { chunk: c, dist: d, ahead: false };
@@ -145,5 +178,5 @@
     return best;
   }
 
-  window.Model = { PARAMS, LEVELS, level, localWind, flowDir, Raster, nearestChunk, nextChange };
+  window.Model = { PARAMS, LEVELS, level, localWind, flowDir, Raster, buildIndex, nearestChunk, nextChange };
 })();

@@ -45,6 +45,16 @@ html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink);
   padding: 8px 12px; border-radius: 999px; font-size: 11px; color: #3f3c35; font-weight: 500; z-index: 5; }
 .legend span { display: inline-flex; align-items: center; gap: 4px; }
 .legend i { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+.legend small { font-size: 10px; color: var(--faint); font-weight: 400; margin-left: -1px; }
+.legend .unit { color: var(--faint); font-size: 10px; }
+
+/* 흐름 입자 캔버스 (지도 위, 마커·팝업 아래) */
+.particles { position: absolute; inset: 0; pointer-events: none; z-index: 1; }
+.maplibregl-marker { z-index: 2; }
+.maplibregl-popup { z-index: 3; font-family: inherit; }
+.maplibregl-popup-content { border-radius: 12px; padding: 10px 12px; box-shadow: var(--shadow); font-size: 13px; color: var(--ink); }
+.pop b { font-weight: 600; }
+.pop-sub { color: var(--muted); font-size: 12px; margin-top: 2px; }
 .locate { position: fixed; right: 16px; bottom: calc(20px + var(--safe-bottom)); width: 44px; height: 44px; border-radius: 50%;
   display: flex; align-items: center; justify-content: center; color: var(--faint); cursor: pointer; z-index: 5; padding: 0; }
 .locate.on { color: var(--ink); }

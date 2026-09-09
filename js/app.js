@@ -91,18 +91,6 @@
 
   const meMarker = new maplibregl.Marker({ element: el.me, rotationAlignment: 'map', pitchAlignment: 'map' });
 
-  function chevronImage() {
-    const s = 32, cv = document.createElement('canvas');
-    cv.width = s; cv.height = s;
-    const c = cv.getContext('2d');
-    c.lineCap = 'round'; c.lineJoin = 'round';
-    c.strokeStyle = 'rgba(28,27,24,0.35)'; c.lineWidth = 7;
-    c.beginPath(); c.moveTo(9, 7); c.lineTo(22, 16); c.lineTo(9, 25); c.stroke();
-    c.strokeStyle = '#ffffff'; c.lineWidth = 3.5;
-    c.beginPath(); c.moveTo(9, 7); c.lineTo(22, 16); c.lineTo(9, 25); c.stroke();
-    return c.getImageData(0, 0, s, s);
-  }
-
   // 선 굵기: 길 종류별 기본 굵기 × 줌 배율 ("zoom"은 최상위 interpolate 안에서만 쓸 수 있음)
   const clsW = ['match', ['get', 'cls'], 'wide', 7, 'road', 5, 3];
   const widthAt = (k, plus) => plus ? ['+', ['*', k, clsW], plus] : ['*', k, clsW];
@@ -121,7 +109,6 @@
         }
       }
     } catch (e) { /* 래스터 지도 등: 무시 */ }
-    map.addImage('chev', chevronImage(), { pixelRatio: 2 });
     // 우리 레이어는 배경 지도의 글자(라벨) 아래에 끼워 넣어 지명이 가려지지 않게 한다
     const firstLabel = (map.getStyle().layers.find(l => l.type === 'symbol') || {}).id;
     const add = layer => map.addLayer(layer, firstLabel);
@@ -136,36 +123,23 @@
       add({ id: 'buildings', type: 'fill', source: 'buildings', paint: { 'fill-color': '#e3dfd5', 'fill-opacity': 0.92 } });
     }
     add({ id: 'buildings-edge', type: 'line', source: 'buildings', paint: { 'line-color': '#cbc6ba', 'line-width': 0.7 } });
+    // 길목 색 = 단계. 방향·세기는 캔버스 입자(particles.js)가 맡는다 — 지도 스타일은 이후 건드리지 않음
     map.addSource('wind', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
     add({
       id: 'wind-casing', type: 'line', source: 'wind',
       layout: { 'line-cap': 'round', 'line-join': 'round' },
-      paint: { 'line-color': '#ffffff', 'line-width': widthExpr(1, 3), 'line-opacity': 0.95 }
+      paint: { 'line-color': '#ffffff', 'line-width': widthExpr(1, 2), 'line-opacity': 0.9 }
     });
     add({
       id: 'wind-line', type: 'line', source: 'wind',
       layout: { 'line-cap': 'round', 'line-join': 'round' },
-      paint: { 'line-color': ['get', 'color'], 'line-width': widthExpr(1, 0) }
-    });
-    for (let i = 0; i < 4; i++) {
-      add({
-        id: 'flow-' + i, type: 'line', source: 'wind',
-        filter: ['all', ['==', ['get', 'level'], i], ['==', ['get', 'arrows'], true]],
-        layout: { 'line-cap': 'round', 'line-join': 'round' },
-        paint: { 'line-color': '#ffffff', 'line-width': widthExpr(0.38, 0), 'line-opacity': [0.55, 0.8, 0.9, 0.95][i], 'line-dasharray': [0, 4, 3] }
-      });
-    }
-    add({
-      id: 'arrows', type: 'symbol', source: 'wind',
-      filter: ['==', ['get', 'arrows'], true],
-      layout: {
-        'symbol-placement': 'line', 'symbol-spacing': 46,
-        'icon-image': 'chev', 'icon-size': ['interpolate', ['linear'], ['zoom'], 14, 0.45, 16, 0.75, 19, 1.1],
-        'icon-rotation-alignment': 'map', 'icon-allow-overlap': true, 'icon-ignore-placement': true
-      }
+      paint: { 'line-color': ['get', 'color'], 'line-width': widthExpr(1, 0), 'line-opacity': 0.92 }
     });
     if (S.windGeoJSON) map.getSource('wind').setData(S.windGeoJSON);
-    startFlowAnimation();
+    if (!S.particles) {
+      S.particles = Particles.create(map, map.getContainer());
+      if (S.computed.length) { S.particles.setTracks(S.computed); S.particles.start(); }
+    }
     // 벡터 지도면 길·건물을 타일에서 바로 꺼낸다 (Overpass 불필요)
     const st = map.getStyle();
     const vs = Object.keys(st.sources).find(k => st.sources[k].type === 'vector');
@@ -173,7 +147,21 @@
     S.needExtract = true;
   });
   map.on('dragstart', () => { S.follow = false; el.locate.classList.remove('on'); });
-  map.on('click', e => { if (SIM) simMoveTo([e.lngLat.lng, e.lngLat.lat]); });
+  // 탭: 길을 누르면 그 길목의 값, 빈 곳을 누르면(테스트 모드) 그 자리로 이동
+  const popup = new maplibregl.Popup({ closeButton: false, closeOnClick: true, offset: 10, maxWidth: '260px' });
+  map.on('click', e => {
+    const hit = map.getLayer('wind-line') ? map.queryRenderedFeatures([[e.point.x - 10, e.point.y - 10], [e.point.x + 10, e.point.y + 10]], { layers: ['wind-line'] }) : [];
+    if (hit.length) {
+      const p = hit[0].properties;
+      const lv = Model.LEVELS[p.level] || Model.LEVELS[0];
+      popup.setLngLat(e.lngLat).setHTML(
+        '<div class="pop"><b style="color:' + lv.text + '">' + lv.name + '</b> ' + p.speed + ' m/s · 돌풍 ' + p.gust
+        + '<div class="pop-sub">' + (p.name || '이름 없는 길') + (p.arrows ? '' : ' · 바람이 가로지름') + '</div></div>').addTo(map);
+      return;
+    }
+    popup.remove();
+    if (SIM) simMoveTo([e.lngLat.lng, e.lngLat.lat]);
+  });
   // 화면이 움직이거나 타일이 새로 도착하면 길·건물을 다시 꺼낸다.
   // ('idle' 이벤트는 흐름 애니메이션 때문에 거의 안 오므로 쓰지 않는다)
   map.on('moveend', () => { S.needExtract = true; tryExtract(); });
@@ -208,26 +196,6 @@
     S.buildings = { type: 'FeatureCollection', features: Array.from(bIndex.values()) };
     const bsrc = map.getSource('buildings');
     if (bsrc) bsrc.setData(S.buildings);
-  }
-
-  /* 흐름 점선 애니메이션: 단계가 셀수록 빨리 흐름 */
-  const DASH = [[0, 4, 3], [0.5, 4, 2.5], [1, 4, 2], [1.5, 4, 1.5], [2, 4, 1], [2.5, 4, 0.5], [3, 4, 0],
-    [0, 0.5, 3, 3.5], [0, 1, 3, 3], [0, 1.5, 3, 2.5], [0, 2, 3, 2], [0, 2.5, 3, 1.5], [0, 3, 3, 1], [0, 3.5, 3, 0.5]];
-  const STEP_MS = [120, 70, 42, 26];
-  function startFlowAnimation() {
-    const step = [0, 0, 0, 0], last = [0, 0, 0, 0];
-    function frame(ts) {
-      if (!document.hidden && S.computed.length) {
-        for (let i = 0; i < 4; i++) {
-          if (ts - last[i] > STEP_MS[i]) {
-            step[i] = (step[i] + 1) % DASH.length; last[i] = ts;
-            map.setPaintProperty('flow-' + i, 'line-dasharray', DASH[step[i]]);
-          }
-        }
-      }
-      requestAnimationFrame(frame);
-    }
-    requestAnimationFrame(frame);
   }
 
   /* ---------- 시작 ---------- */
@@ -296,12 +264,18 @@
       }
     } catch (e) { console.warn('나침반 권한 없음', e); }
   }
+  let lastShownHeading = null, lastHeadingUI = 0;
   function onOrient(e) {
     let h = null;
     if (typeof e.webkitCompassHeading === 'number') h = e.webkitCompassHeading;          // iOS
     else if (e.absolute && typeof e.alpha === 'number') h = (360 - e.alpha) % 360;       // Android
     if (h === null || isNaN(h)) return;
     S.compass = h; S.compassTime = Date.now();
+    // 나침반은 초당 수십 번 오므로: 3도 이상 바뀌고 250 ms 지났을 때만 화면 갱신
+    const now = Date.now();
+    if (lastShownHeading !== null && Geo.angDiff(lastShownHeading, h) < 3) return;
+    if (now - lastHeadingUI < 250) return;
+    lastShownHeading = h; lastHeadingUI = now;
     updateHeadingUI();
   }
   function heading() {
@@ -386,6 +360,8 @@
       const w = Model.localWind(ch, S.bg, S.raster);
       return Object.assign({}, ch, w, { coordsFlow: w.forward ? ch.coords : ch.coords.slice().reverse() });
     });
+    S.computed._idx = Model.buildIndex(S.computed);
+    if (S.particles) { S.particles.setTracks(S.computed); S.particles.start(); }
     const fc = {
       type: 'FeatureCollection',
       features: S.computed.map(c => ({
@@ -426,7 +402,7 @@
     }
     el.nowDot.style.background = cur.level.color;
     el.nowLevel.textContent = cur.level.name;
-    el.nowLevel.style.color = cur.level.color;
+    el.nowLevel.style.color = cur.level.text;
     el.nowSpeed.textContent = cur.speed.toFixed(1);
     el.nowGust.textContent = '돌풍 ' + Math.round(cur.gust) + ' m/s';
     el.nowArrow.style.transform = 'rotate(' + Model.flowDir(S.bg) + 'deg)';
