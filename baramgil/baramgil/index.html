@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <title>바람길</title>
+  <meta name="theme-color" content="#f6f4ef">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="바람길">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <link rel="icon" href="icons/icon-192.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;500;600;700&display=swap">
+  <link rel="stylesheet" href="vendor/maplibre-gl.css">
+  <link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+  <div id="map"></div>
+
+  <div id="me" class="me">
+    <div id="me-wedge" class="me-wedge"></div>
+    <div class="me-dot"></div>
+  </div>
+
+  <div id="now" class="card now">
+    <div class="row1">
+      <span id="now-dot" class="dot"></span>
+      <span id="now-level" class="level">—</span>
+      <span id="now-speed" class="num">–.–</span>
+      <span class="unit">m/s</span>
+      <span id="now-time" class="time"></span>
+    </div>
+    <div class="row2">
+      <span id="now-gust"></span>
+      <span class="dir"><svg id="now-arrow" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#3f3c35" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20V4"></path><path d="M6 10l6-6 6 6"></path></svg><span id="now-dir">위치 기다리는 중</span></span>
+      <span id="now-place" class="place"></span>
+    </div>
+  </div>
+
+  <div id="next" class="card next" hidden>
+    <span id="next-dot" class="dot"></span>
+    <div class="txt">
+      <div id="next-title" class="t"></div>
+      <div id="next-sub" class="s"></div>
+    </div>
+  </div>
+
+  <div class="legend card">
+    <span><i style="background:#2e9a5f"></i>잔잔</span>
+    <span><i style="background:#d8961c"></i>주의</span>
+    <span><i style="background:#d64a2f"></i>강풍</span>
+    <span><i style="background:#8a3aa8"></i>위험</span>
+  </div>
+
+  <button id="locate" class="locate card on" aria-label="내 위치">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="7"></circle><circle cx="12" cy="12" r="2"></circle><path d="M12 2v3"></path><path d="M12 19v3"></path><path d="M2 12h3"></path><path d="M19 12h3"></path></svg>
+  </button>
+
+  <div id="toast" class="toast" hidden></div>
+
+  <div id="start" class="start">
+    <div class="start-card">
+      <div class="start-title">바람길</div>
+      <div class="start-sub">지금 서 있는 길목의 풍속·풍향, 그리고 다음 길목의 바람을 보여줍니다.</div>
+      <button id="btn-start" class="btn primary">위치 사용 시작</button>
+      <button id="btn-sim" class="btn">테스트 모드로 보기</button>
+      <div class="start-note">위치는 기기 안에서만 쓰이고 저장되지 않습니다.</div>
+    </div>
+  </div>
+
+  <script src="vendor/maplibre-gl.js"></script>
+  <script src="js/geo.js"></script>
+  <script src="js/wind.js"></script>
+  <script src="js/streets.js"></script>
+  <script src="js/model.js"></script>
+  <script src="js/mock.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
