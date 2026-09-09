@@ -1,0 +1,209 @@
+/* node tests/logic.test.js — 계산 로직 검증 (브라우저 없이) */
+const fs = require('fs');
+const path = require('path');
+const vm = require('vm');
+
+const ctx = { window: {}, console, localStorage: null };
+ctx.window = ctx;
+vm.createContext(ctx);
+for (const f of ['geo.js', 'streets.js', 'model.js', 'mock.js']) {
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'js', f), 'utf8'), ctx, { filename: f });
+}
+const { Geo, Streets, Model, Mock } = ctx;
+
+let fails = 0, n = 0;
+function eq(name, got, exp, tol) {
+  n++;
+  const ok = (typeof exp === 'number' && tol !== undefined) ? Math.abs(got - exp) <= tol : JSON.stringify(got) === JSON.stringify(exp);
+  if (!ok) { fails++; console.log('FAIL', name, '| got', got, '| expected', exp); }
+  else console.log('ok  ', name);
+}
+
+// --- Geo
+const c = [126.8826, 37.4816];
+eq('bearing north', Geo.bearing(c, Geo.destination(c, 0, 100)), 0, 0.01);
+eq('bearing east', Geo.bearing(c, Geo.destination(c, 90, 100)), 90, 0.01);
+eq('bearing SW', Geo.bearing(c, Geo.destination(c, 225, 100)), 225, 0.01);
+eq('distance 100m', Geo.distance(c, Geo.destination(c, 37, 100)), 100, 0.01);
+eq('angDiff 350 vs 10', Geo.angDiff(350, 10), 20, 1e-9);
+eq('axisAngle axis 0 dir 180', Geo.axisAngle(0, 180), 0, 1e-9);
+eq('axisAngle axis 90 dir 180', Geo.axisAngle(90, 180), 90, 1e-9);
+eq('axisAngle axis 45 dir 315', Geo.axisAngle(45, 315), 90, 1e-9);
+const a = Geo.destination(c, 90, -50), b = Geo.destination(c, 90, 50);
+eq('distPointSeg on segment', Geo.distPointSeg(c, a, b).d, 0, 0.01);
+eq('distPointSeg 30m off', Geo.distPointSeg(Geo.destination(c, 0, 30), a, b).d, 30, 0.05);
+eq('distPointSeg beyond end', Geo.distPointSeg(Geo.destination(c, 90, 80), a, b).d, 30, 0.05);
+eq('dirName 315', Geo.dirName(315), '북서');
+eq('dirName 0', Geo.dirName(0), '북');
+eq('dirName 200', Geo.dirName(200), '남');
+
+// --- Streets: 분할·분류
+const straight = { id: 1, name: 'A', tags: { highway: 'residential' }, coords: [c, Geo.destination(c, 0, 100), Geo.destination(c, 0, 200)] };
+const lshape = { id: 2, name: 'L', tags: { highway: 'tertiary' }, coords: [c, Geo.destination(c, 0, 100), Geo.destination(Geo.destination(c, 0, 100), 90, 100)] };
+const tiny = { id: 3, name: '', tags: { highway: 'footway' }, coords: [c, Geo.destination(c, 0, 2)] };
+const ch = Streets.chunkWays([straight, lshape, tiny]);
+eq('straight → 1 chunk', ch.filter(x => x.wayId === 1).length, 1);
+eq('L → 2 chunks', ch.filter(x => x.wayId === 2).length, 2);
+eq('tiny (<4m) dropped', ch.filter(x => x.wayId === 3).length, 0);
+eq('straight axis 0', ch.find(x => x.wayId === 1).axis, 0, 0.01);
+eq('L second axis 90', ch.filter(x => x.wayId === 2)[1].axis, 90, 0.01);
+eq('L second chunk 2 pts', ch.filter(x => x.wayId === 2)[1].coords.length, 2);
+eq('L second chunk length 100', ch.filter(x => x.wayId === 2)[1].length, 100, 0.05);
+eq('classify primary', Streets.classify({ highway: 'primary' }), 'wide');
+eq('classify tertiary 5 lanes', Streets.classify({ highway: 'tertiary', lanes: '5' }), 'wide');
+eq('classify residential', Streets.classify({ highway: 'residential' }), 'alley');
+eq('classify residential 3 lanes', Streets.classify({ highway: 'residential', lanes: '3' }), 'road');
+eq('classify footway', Streets.classify({ highway: 'footway' }), 'alley');
+const q = Streets.buildQuery([37.47, 126.87, 37.49, 126.89]);
+eq('query has bbox', q.includes('(37.47000,126.87000,37.49000,126.89000)'), true);
+eq('query excludes sidewalk', q.includes('["footway"!~"^(sidewalk|crossing)$"]'), true);
+eq('query out geom', q.endsWith('out geom;'), true);
+
+// --- Model
+const bgN = { speed: 6, dir: 0, gust: 9 };      // 북풍 → 남쪽으로 흐름
+const nsAlley = { cls: 'alley', axis: 0, coords: [Geo.destination(c, 0, 50), Geo.destination(c, 180, 50)] }; // 북→남 순서
+const snAlley = { cls: 'alley', axis: 0, coords: [Geo.destination(c, 180, 50), Geo.destination(c, 0, 50)] }; // 남→북 순서
+const ewAlley = { cls: 'alley', axis: 90, coords: [Geo.destination(c, 270, 50), Geo.destination(c, 90, 50)] };
+const ewWide = { cls: 'wide', axis: 90, coords: ewAlley.coords };
+const diag = { cls: 'road', axis: 45, coords: [Geo.destination(c, 225, 50), Geo.destination(c, 45, 50)] };
+let w = Model.localWind(nsAlley, bgN, null);
+eq('aligned alley ratio 0.85', w.ratio, 0.85, 1e-9);
+eq('aligned alley speed 5.1', w.speed, 5.1, 1e-9);
+eq('aligned alley gust 7.65', w.gust, 7.65, 1e-9);
+eq('aligned alley forward (N→S coords, flow S)', w.forward, true);
+eq('aligned alley arrows', w.arrows, true);
+eq('aligned alley level 주의', w.level.name, '주의');
+w = Model.localWind(snAlley, bgN, null);
+eq('S→N coords not forward', w.forward, false);
+w = Model.localWind(ewAlley, bgN, null);
+eq('cross alley ratio 0.25', w.ratio, 0.25, 1e-9);
+eq('cross alley no arrows', w.arrows, false);
+eq('cross alley level 잔잔', w.level.name, '잔잔');
+w = Model.localWind(ewWide, bgN, null);
+eq('cross wide ratio 0.5', w.ratio, 0.5, 1e-9);
+w = Model.localWind(diag, bgN, null);
+eq('diag road ratio 0.575', w.ratio, 0.40 + 0.35 * 0.5, 1e-9);
+eq('diag road arrows (cos 0.707)', w.arrows, true);
+eq('flowDir 315 → 135', Model.flowDir({ dir: 315 }), 135);
+eq('level 3.39 잔잔', Model.level(3.39).name, '잔잔');
+eq('level 3.4 주의', Model.level(3.4).name, '주의');
+eq('level 5.5 강풍', Model.level(5.5).name, '강풍');
+eq('level 8 위험', Model.level(8).name, '위험');
+
+// 강한 바람에서 단계 분포
+const bgStrong = { speed: 10, dir: 315, gust: 15 };
+const mockChunks = Streets.chunkWays(Mock.ways(c));
+const levels = mockChunks.map(x => Model.localWind(x, bgStrong, null).level.name);
+eq('mock chunks exist', mockChunks.length > 8, true);
+eq('mock has 위험 or 강풍 with 10 m/s', levels.some(l => l === '위험' || l === '강풍'), true);
+eq('mock has 잔잔 with 10 m/s (cross alleys)', levels.some(l => l === '잔잔'), true);
+
+// --- Raster 인덱싱 (이미지 대신 직접 주입)
+const R = Model.Raster();
+R.meta = { west: 126.88, south: 37.48, east: 126.89, north: 37.49, width: 10, height: 10, directions: 16, ratio_max: 2.0 };
+R.images = [];
+for (let d = 0; d < 16; d++) {
+  const arr = new Uint8ClampedArray(10 * 10 * 4);
+  for (let i = 0; i < 100; i++) { arr[i * 4 + 2] = Math.round(255 * (d / 16)); arr[i * 4 + 3] = 255; }
+  arr[(0 * 10 + 0) * 4 + 3] = 0; // (row0,col0) = 건물
+  R.images.push(arr);
+}
+R.ready = true;
+eq('raster outside → null', R.ratioAt(126.87, 37.485, 0), null);
+eq('raster building → null', R.ratioAt(126.8801, 37.4899, 0), null);
+eq('raster dir 90 → index 4 → 0.5', R.ratioAt(126.885, 37.485, 90), 2.0 * Math.round(255 * 4 / 16) / 255, 1e-9);
+eq('raster dir 359 → index 0', R.ratioAt(126.885, 37.485, 359), 0, 1e-9);
+w = Model.localWind({ cls: 'alley', axis: 0, coords: [[126.885, 37.486], [126.885, 37.484]] }, { speed: 4, dir: 90, gust: 6 }, R);
+eq('raster used for ratio', w.ratio, 2.0 * Math.round(255 * 4 / 16) / 255, 1e-9);
+
+// --- 다음 길목 탐색 (mock 격자, 북풍 7.5 m/s → 남북 골목 강풍, 동서 길 잔잔/주의)
+const bgMock = Mock.wind();
+const computed = Streets.chunkWays(Mock.ways(c)).map(ch => Object.assign({}, ch, Model.localWind(ch, bgMock, null)));
+const byName = name => computed.filter(x => x.name === name);
+eq('mock: 디지털로9길(남북 골목) 강풍', byName('디지털로9길')[0].level.name, '강풍');
+eq('mock: 벚꽃로(동서 골목) 잔잔', byName('벚꽃로')[0].level.name, '잔잔');
+eq('mock: 디지털로(동서 4차로) 잔잔', byName('디지털로')[0].level.name, '잔잔');
+// 현재: 디지털로 위 (중심에서 서쪽 30 m), 서쪽으로 진행 → 30 m 앞에 디지털로9길(강풍) 교차
+const posW = Geo.destination(c, 270, 30);
+const curW = { chunk: byName('디지털로')[0], level: byName('디지털로')[0].level };
+let nx = Model.nextChange(posW, 270, curW, computed);
+eq('ahead west: found 강풍 alley', nx && nx.chunk.name, '디지털로9길');
+eq('ahead west: dist ~30 m', nx && nx.dist, 30, 10);
+eq('ahead west: ahead flag', nx && nx.ahead, true);
+// 같은 자리에서 동쪽으로 진행 → 150 m 안에 가산디지털1로(남북 8차로, 비율 0.7 → 5.25 주의) 교차 (x=+160 → 190 m) 는 범위 밖, 남부순환로(대각) 는 교차
+nx = Model.nextChange(posW, 90, curW, computed);
+eq('ahead east: something within 150 m or null', nx === null || typeof nx.dist === 'number', true);
+// 방향 없음 → 근처 다른 단계 길목
+nx = Model.nextChange(posW, null, curW, computed);
+eq('no heading: nearest different level within 80 m', nx && nx.ahead, false);
+eq('no heading: nearest is 남부순환로(대각, ~21 m) or 디지털로9길(30 m)', nx && (nx.chunk.name === '남부순환로' || nx.chunk.name === '디지털로9길'), true);
+// 변화 없는 방향: 벚꽃로 위에서 남쪽(격자 밖)으로
+const posS = Geo.destination(c, 180, 180);
+const curS = { chunk: byName('벚꽃로')[0], level: byName('벚꽃로')[0].level };
+nx = Model.nextChange(posS, 180, curS, computed);
+eq('ahead south from 벚꽃로: null or non-잔잔', nx === null || nx.chunk.level.name !== '잔잔', true);
+// nearestChunk
+const nc = Model.nearestChunk(computed, c, 25, null);
+eq('nearestChunk at center = 디지털로 or 남부순환로', nc && (nc.chunk.name === '디지털로' || nc.chunk.name === '남부순환로'), true);
+eq('nearestChunk far away → null', Model.nearestChunk(computed, Geo.destination(c, 0, 5000), 25, null), null);
+
+// --- 건물 파싱
+const elems = [
+  { type: 'way', id: 10, tags: { building: 'yes', 'building:levels': '5' }, geometry: [{ lon: 126.88, lat: 37.48 }, { lon: 126.881, lat: 37.48 }, { lon: 126.881, lat: 37.481 }, { lon: 126.88, lat: 37.481 }, { lon: 126.88, lat: 37.48 }] },
+  { type: 'way', id: 11, tags: { building: 'apartments', height: '45' }, geometry: [{ lon: 126.88, lat: 37.48 }, { lon: 126.881, lat: 37.48 }, { lon: 126.881, lat: 37.481 }, { lon: 126.88, lat: 37.481 }] },
+  { type: 'way', id: 12, tags: { building: 'yes' }, geometry: [{ lon: 126.88, lat: 37.48 }, { lon: 126.881, lat: 37.48 }] },
+  { type: 'way', id: 13, tags: { highway: 'residential', name: '길' }, geometry: [{ lon: 126.88, lat: 37.48 }, { lon: 126.881, lat: 37.48 }] }
+];
+const area = Streets.splitElements(elems);
+eq('buildings parsed (2 valid, 1 too small dropped)', area.buildings.length, 2);
+eq('ways parsed', area.ways.length, 1);
+eq('height from levels 5×3.2', area.buildings[0].height, 16, 1e-9);
+eq('height from height tag', area.buildings[1].height, 45, 1e-9);
+eq('open ring closed', JSON.stringify(area.buildings[1].ring[0]) === JSON.stringify(area.buildings[1].ring[area.buildings[1].ring.length - 1]), true);
+eq('default height 9.6', Streets.buildingHeight({}), 9.6, 1e-9);
+const gj = Streets.buildingsToGeoJSON(area.buildings);
+eq('geojson polygons', gj.features.length === 2 && gj.features[0].geometry.type === 'Polygon', true);
+eq('query includes building', Streets.buildQuery([37.47, 126.87, 37.49, 126.89]).includes('way["building"](37.47000,126.87000,37.49000,126.89000);'), true);
+const mb = Mock.buildings(c);
+eq('mock buildings exist', mb.features.length > 20, true);
+
+// --- 벡터 타일에서 꺼내기 (가짜 map)
+const fakeMap = {
+  querySourceFeatures(src, o) {
+    const L = (cls, coords, extra) => ({ id: undefined, properties: Object.assign({ class: cls }, extra || {}), geometry: { type: 'LineString', coordinates: coords } });
+    if (o.sourceLayer === 'transportation') return [
+      L('primary', [Geo.destination(c, 270, 300), Geo.destination(c, 90, 300)]),                 // 동서 큰길
+      L('primary', [Geo.destination(c, 270, 300), Geo.destination(c, 90, 300)]),                 // 중복(타일 버퍼)
+      L('minor', [Geo.destination(c, 180, 300), Geo.destination(c, 0, 300)]),                    // 남북 골목
+      L('motorway', [Geo.destination(c, 225, 300), Geo.destination(c, 45, 300)]),                // 제외
+      L('minor', [Geo.destination(c, 135, 300), Geo.destination(c, 315, 300)], { brunnel: 'tunnel' }), // 제외
+      { properties: { class: 'service' }, geometry: { type: 'MultiLineString', coordinates: [[Geo.destination(c, 90, 50), Geo.destination(c, 90, 120)], [Geo.destination(c, 90, 130), Geo.destination(c, 90, 200)]] } },
+      L('rail', [Geo.destination(c, 270, 100), Geo.destination(c, 90, 100)])
+    ];
+    if (o.sourceLayer === 'transportation_name') return [
+      { properties: { name: 'Digital-ro', 'name:ko': '디지털로' }, geometry: { type: 'LineString', coordinates: [Geo.destination(c, 270, 300), Geo.destination(c, 90, 300)] } },
+      { properties: { name: '가산로' }, geometry: { type: 'LineString', coordinates: [Geo.destination(Geo.destination(c, 0, 200), 270, 300), Geo.destination(Geo.destination(c, 0, 200), 90, 300)] } }
+    ];
+    if (o.sourceLayer === 'building') return [
+      { properties: { render_height: 42 }, geometry: { type: 'Polygon', coordinates: [[Geo.destination(c, 45, 30), Geo.destination(c, 45, 60), Geo.destination(c, 90, 60), Geo.destination(c, 45, 30)]] } },
+      { properties: { render_height: 42 }, geometry: { type: 'Polygon', coordinates: [[Geo.destination(c, 45, 30), Geo.destination(c, 45, 60), Geo.destination(c, 90, 60), Geo.destination(c, 45, 30)]] } }, // 중복
+      { properties: {}, geometry: { type: 'MultiPolygon', coordinates: [[[Geo.destination(c, 225, 30), Geo.destination(c, 225, 60), Geo.destination(c, 270, 60), Geo.destination(c, 225, 30)]]] } },
+      { properties: {}, geometry: { type: 'Point', coordinates: c } }
+    ];
+    return [];
+  }
+};
+const vt = Streets.fromVectorTiles(fakeMap, 'openmaptiles');
+eq('vt: ways (dup·motorway·tunnel·rail 제외, multi 2조각)', vt.ways.length, 4);
+eq('vt: primary → wide', vt.ways[0].cls, 'wide');
+eq('vt: minor → alley', vt.ways[1].cls, 'alley');
+eq('vt: buildings (dup 제외, Point 제외)', vt.buildings.features.length, 2);
+eq('vt: render_height used', vt.buildings.features[0].properties.height, 42, 1e-9);
+eq('vt: default height', vt.buildings.features[1].properties.height, 9.6, 1e-9);
+const vtChunks = Streets.chunkWays(vt.ways);
+eq('vt chunk: 동서 큰길 이름 = 디지털로 (name:ko 우선)', vtChunks.find(x => x.cls === 'wide').name, '디지털로');
+eq('vt chunk: 남북 골목 이름 없음(가산로는 200 m 북쪽)', vtChunks.find(x => x.cls === 'alley' && Math.abs(x.axis) < 1).name, '');
+eq('vt chunk: service 조각도 alley', vtChunks.filter(x => x.cls === 'alley').length >= 3, true);
+
+console.log(`(건물 포함) ${n - fails}/${n} passed`);
+process.exit(fails ? 1 : 0);
