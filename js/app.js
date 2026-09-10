@@ -13,7 +13,11 @@
     //            | 'https://...style.json'(MapLibre 스타일 URL) | ['https://.../{z}/{x}/{y}.png'](XYZ 래스터 타일 URL 배열)
     // positron/bright 는 OpenFreeMap(키·한도 없음). CARTO 래스터는 2026-08부터 키 없으면 워터마크가 찍혀서 뺐음.
     basemap: 'positron',
-    buildings3d: true                   // 건물을 높이 있는 형상으로 (두 손가락 위아래로 기울여 보기)
+    buildings3d: true,                  // 건물을 높이 있는 형상으로 (두 손가락 위아래로 기울여 보기)
+    // 장소 검색: 기본은 Photon(OpenStreetMap, 키 없음, 자동완성). 카카오 JavaScript 키를 넣으면 카카오 로컬(한국 장소·주소 품질 최고, 자동완성).
+    //   키 발급: developers.kakao.com → 내 애플리케이션 → 앱 만들기 → [앱 키] JavaScript 키 복사
+    //           → [플랫폼] Web 에 사이트 도메인 등록 (예: https://아이디.github.io) — 등록 안 하면 SDK 가 거부함
+    search: { provider: 'photon', kakaoKey: '' }
   };
 
   const WIND_ATTR = '바람 <a href="https://open-meteo.com/">Open-Meteo</a>';
@@ -150,6 +154,7 @@
   // 탭: 길을 누르면 그 길목의 값, 빈 곳을 누르면(테스트 모드) 그 자리로 이동
   const popup = new maplibregl.Popup({ closeButton: false, closeOnClick: true, offset: 10, maxWidth: '260px' });
   map.on('click', e => {
+    if (window.Nav && Nav.handleClick(e)) return;
     const hit = map.getLayer('wind-line') ? map.queryRenderedFeatures([[e.point.x - 10, e.point.y - 10], [e.point.x + 10, e.point.y + 10]], { layers: ['wind-line'] }) : [];
     if (hit.length) {
       const p = hit[0].properties;
@@ -207,6 +212,10 @@
     el.start.hidden = true;
     SIM = sim || SIM;
     await requestCompass();
+    // 공유 링크(?lat&lon&q)로 열었으면 그 장소를 바로 보여줌
+    if (params.get('q') && params.get('lat') && params.get('lon') && window.Nav) {
+      setTimeout(() => Nav.showPlace({ name: params.get('q'), address: '', category: '', lat: parseFloat(params.get('lat')), lon: parseFloat(params.get('lon')) }), 800);
+    }
     if (SIM || MOCK) {
       setPosition(CONFIG.defaultCenter, true);
       toast('테스트 모드 · 지도를 탭하면 그 자리로 이동');
@@ -248,6 +257,7 @@
     ensureStreets();
     ensureWind();
     refreshCards();
+    if (window.Nav) Nav.onPosition();
   }
 
   /* ---------- 나침반 ---------- */
@@ -264,32 +274,59 @@
       }
     } catch (e) { console.warn('나침반 권한 없음', e); }
   }
-  let lastShownHeading = null, lastHeadingUI = 0;
+  let lastNextHeading = null, lastNextTime = 0;
   function onOrient(e) {
     let h = null;
     if (typeof e.webkitCompassHeading === 'number') h = e.webkitCompassHeading;          // iOS
     else if (e.absolute && typeof e.alpha === 'number') h = (360 - e.alpha) % 360;       // Android
     if (h === null || isNaN(h)) return;
+    setCompass(h);
+  }
+  function setCompass(h) {
     S.compass = h; S.compassTime = Date.now();
-    // 나침반은 초당 수십 번 오므로: 3도 이상 바뀌고 250 ms 지났을 때만 화면 갱신
+    kickHeading(); // 부채꼴은 매 프레임 부드럽게 따라감
+    // 다음 길목 탐색(계산 비용 큼)은 3도 이상 바뀌고 250 ms 지났을 때만
     const now = Date.now();
-    if (lastShownHeading !== null && Geo.angDiff(lastShownHeading, h) < 3) return;
-    if (now - lastHeadingUI < 250) return;
-    lastShownHeading = h; lastHeadingUI = now;
-    updateHeadingUI();
+    if (lastNextHeading !== null && Geo.angDiff(lastNextHeading, h) < 3) return;
+    if (now - lastNextTime < 250) return;
+    lastNextHeading = h; lastNextTime = now;
+    if (S.pos && S.computed.length) updateNext();
   }
   function heading() {
     if (S.compass !== null && Date.now() - S.compassTime < 5000) return S.compass;
     return S.moveBearing;
   }
+  /* 표시용 방위 보간: 나침반 값(목표)과 화면에 그리는 값을 분리해 매 프레임 최단 회전 방향으로
+   * 지수 보간(시상수 0.12 s). 급히 돌려도 툭툭 끊기지 않고, 목표에 닿으면 루프를 멈춰 CPU 를 안 씀. */
+  let shownHeading = null, headingAnim = 0, lastHeadingFrame = 0;
+  function animateHeading(now) {
+    headingAnim = 0;
+    const target = heading();
+    if (target === null) { el.meWedge.style.opacity = '0'; shownHeading = null; return; }
+    el.meWedge.style.opacity = '1';
+    if (shownHeading === null) shownHeading = target;
+    let dt = (now - lastHeadingFrame) / 1000;
+    lastHeadingFrame = now;
+    if (!(dt > 0)) dt = 0.016;
+    dt = Math.min(dt, 0.1);
+    const diff = ((target - shownHeading + 540) % 360) - 180; // -180..180 (최단 회전)
+    const k = 1 - Math.exp(-dt / 0.12);
+    shownHeading = (shownHeading + diff * k + 360) % 360;
+    el.meWedge.style.transform = 'rotate(' + shownHeading.toFixed(2) + 'deg)';
+    if (Math.abs(diff) > 0.2) headingAnim = requestAnimationFrame(animateHeading);
+    else { shownHeading = target; el.meWedge.style.transform = 'rotate(' + target.toFixed(2) + 'deg)'; }
+  }
+  function kickHeading() {
+    if (headingAnim) return;
+    lastHeadingFrame = performance.now();
+    headingAnim = requestAnimationFrame(animateHeading);
+  }
   let headingRaf = 0;
   function updateHeadingUI() {
+    kickHeading();
     if (headingRaf) return;
     headingRaf = requestAnimationFrame(() => {
       headingRaf = 0;
-      const h = heading();
-      el.meWedge.style.opacity = h === null ? '0' : '1';
-      if (h !== null) meMarker.setRotation(h);
       if (S.pos && S.computed.length) updateNext();
     });
   }
@@ -362,6 +399,7 @@
     });
     S.computed._idx = Model.buildIndex(S.computed);
     if (S.particles) { S.particles.setTracks(S.computed); S.particles.start(); }
+    if (window.Nav) Nav.onRecompute();
     const fc = {
       type: 'FeatureCollection',
       features: S.computed.map(c => ({
@@ -415,19 +453,21 @@
     const cur = S.current;
     if (!cur || !S.computed.length) { el.next.hidden = true; return; }
     const h = heading();
-    const found = Model.nextChange(S.pos, h, cur, S.computed, { lookAhead: CONFIG.lookAhead });
+    const ov = window.Nav ? Nav.aheadOverride(cur) : undefined; // 경로 안내 중이면 경로 기준
+    const onRoute = ov !== undefined;
+    const found = onRoute ? ov : Model.nextChange(S.pos, h, cur, S.computed, { lookAhead: CONFIG.lookAhead });
     el.next.hidden = false;
     if (!found) {
       el.nextDot.style.background = cur.level.color;
-      el.nextTitle.textContent = (h === null ? '주변 80 m' : '앞 ' + CONFIG.lookAhead + ' m') + ' · 변화 없음';
+      el.nextTitle.textContent = (onRoute ? '경로 앞 ' + CONFIG.lookAhead + ' m' : (h === null ? '주변 80 m' : '앞 ' + CONFIG.lookAhead + ' m')) + ' · 변화 없음';
       el.nextSub.textContent = '지금 단계(' + cur.level.name + ') 그대로';
       return;
     }
-    const c = found.chunk;
-    el.nextDot.style.background = c.level.color;
-    el.nextTitle.textContent = (found.ahead ? found.dist + ' m 앞' : '근처 ' + Math.round(found.dist) + ' m') + ' · ' + c.level.name;
-    el.nextSub.textContent = (c.name || '이름 없는 길') + ' · ' + c.speed.toFixed(1) + ' m/s · 돌풍 ' + Math.round(c.gust)
-      + (found.ahead ? '' : ' · 방향 확인 중');
+    const c = found.chunk, lv = found.level || c.level;
+    el.nextDot.style.background = lv.color;
+    el.nextTitle.textContent = (found.ahead ? found.dist + ' m 앞' : '근처 ' + Math.round(found.dist) + ' m') + ' · ' + lv.name;
+    el.nextSub.textContent = (c.name || '이름 없는 길') + (c.id ? ' · ' + c.speed.toFixed(1) + ' m/s · 돌풍 ' + Math.round(c.gust) : '')
+      + (found.ahead ? '' : ' · 방향 확인 중') + (onRoute ? ' · 경로 기준' : '');
   }
 
   /* ---------- 기타 UI ---------- */
@@ -459,5 +499,8 @@
     }
   }
 
-  window.App = { S, CONFIG, map, recompute, start };
+  Places.configure(CONFIG.search);
+  if (window.Nav) Nav.init({ map, S, heading, toast, hideToast, defaultCenter: CONFIG.defaultCenter });
+
+  window.App = { S, CONFIG, map, recompute, start, heading, setCompass, shownHeading: () => shownHeading };
 })();

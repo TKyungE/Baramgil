@@ -30,6 +30,7 @@
       <span id="now-speed" class="num">–.–</span>
       <span class="unit">m/s</span>
       <span id="now-time" class="time"></span>
+      <button id="btn-search" class="iconbtn" aria-label="검색"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"></circle><path d="M20 20l-3.5-3.5"></path></svg></button>
     </div>
     <div class="row2">
       <span id="now-gust"></span>
@@ -46,7 +47,30 @@
     </div>
   </div>
 
-  <div class="legend card">
+  <div id="ctrl" class="ctrl">
+    <button id="zoom-in" class="card cbtn" aria-label="확대">+</button>
+    <button id="zoom-out" class="card cbtn" aria-label="축소">−</button>
+    <button id="tilt" class="card cbtn small" aria-label="3D">3D</button>
+  </div>
+
+  <div id="sheet" class="sheet card" hidden>
+    <div class="sheet-handle"></div>
+    <button id="sheet-close" class="sheet-close" aria-label="닫기"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"></path></svg></button>
+    <div id="sheet-body" class="sheet-body"></div>
+  </div>
+
+  <div id="search" class="search" hidden>
+    <div class="search-bar">
+      <button id="search-back" class="iconbtn" aria-label="뒤로"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 6l-6 6 6 6"></path></svg></button>
+      <input id="search-input" type="search" placeholder="장소, 주소 검색" enterkeyhint="search" autocomplete="off">
+      <button id="search-clear" class="iconbtn" aria-label="지우기"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"></path></svg></button>
+    </div>
+    <div id="search-hint" class="search-hint"></div>
+    <div id="search-list" class="search-list"></div>
+    <div class="search-foot">검색·주소 © OpenStreetMap (Photon) · 도보 경로 Valhalla</div>
+  </div>
+
+  <div id="legend" class="legend card">
     <span><i style="background:#86d3a6"></i>잔잔<small>~3</small></span>
     <span><i style="background:#e0a020"></i>주의<small>3–5</small></span>
     <span><i style="background:#e2532a"></i>강풍<small>5–8</small></span>
@@ -77,6 +101,9 @@
   <script src="js/model.js"></script>
   <script src="js/mock.js"></script>
   <script src="js/particles.js"></script>
+  <script src="js/places.js"></script>
+  <script src="js/route.js"></script>
+  <script src="js/nav.js"></script>
   <script src="js/app.js"></script>
 </body>
 </html>

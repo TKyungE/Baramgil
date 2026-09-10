@@ -1,9 +1,9 @@
 /* 앱 껍데기만 캐시 (지도 타일·바람·길 데이터는 캐시하지 않음) */
-const CACHE = 'baramgil-shell-v2';
+const CACHE = 'baramgil-shell-v3';
 const SHELL = [
   './', './index.html', './css/app.css', './manifest.webmanifest',
   './vendor/maplibre-gl.js', './vendor/maplibre-gl.css',
-  './js/geo.js', './js/wind.js', './js/streets.js', './js/model.js', './js/mock.js', './js/particles.js', './js/app.js',
+  './js/geo.js', './js/wind.js', './js/streets.js', './js/model.js', './js/mock.js', './js/particles.js', './js/places.js', './js/route.js', './js/nav.js', './js/app.js',
   './icons/icon-192.png', './icons/icon-512.png', './icons/apple-touch-icon.png'
 ];
 

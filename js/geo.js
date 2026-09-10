@@ -81,5 +81,41 @@
     return names[Math.round((((deg % 360) + 360) % 360) / 45) % 8];
   }
 
-  window.Geo = { bearing, distance, angDiff, axisAngle, distPointSeg, distPointLine, destination, bbox, polylineLength, dirName };
+  // 구글식 인코딩 폴리라인 해독 (Valhalla 는 precision 6). 반환 [[lon, lat], ...]
+  function decodePolyline(str, precision) {
+    const f = Math.pow(10, precision || 6);
+    let idx = 0, lat = 0, lon = 0;
+    const out = [];
+    while (idx < str.length) {
+      let b, shift = 0, result = 0;
+      do { b = str.charCodeAt(idx++) - 63; result |= (b & 0x1f) << shift; shift += 5; } while (b >= 0x20);
+      lat += (result & 1) ? ~(result >> 1) : (result >> 1);
+      shift = 0; result = 0;
+      do { b = str.charCodeAt(idx++) - 63; result |= (b & 0x1f) << shift; shift += 5; } while (b >= 0x20);
+      lon += (result & 1) ? ~(result >> 1) : (result >> 1);
+      out.push([lon / f, lat / f]);
+    }
+    return out;
+  }
+
+  // 폴리라인을 최대 step(m) 간격의 점 목록으로 촘촘하게 (각 점에 누적 거리 포함)
+  function densify(coords, step) {
+    const out = [];
+    let acc = 0;
+    for (let i = 0; i < coords.length - 1; i++) {
+      const a = coords[i], b = coords[i + 1];
+      const d = distance(a, b);
+      const n = Math.max(1, Math.ceil(d / step));
+      for (let k = 0; k < n; k++) {
+        const t = k / n;
+        out.push({ p: [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t], s: acc + d * t });
+      }
+      acc += d;
+    }
+    const last = coords[coords.length - 1];
+    out.push({ p: last, s: acc });
+    return out;
+  }
+
+  window.Geo = { bearing, distance, angDiff, axisAngle, distPointSeg, distPointLine, destination, bbox, polylineLength, dirName, decodePolyline, densify };
 })();

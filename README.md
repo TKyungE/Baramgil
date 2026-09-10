@@ -33,6 +33,18 @@ Claude Code에서 하려면 폴더 안에서: `git init && git add -A && git com
 - 길을 탭하면 그 길목의 단계·풍속·돌풍·이름이 뜸.
 - 위 카드 = 지금 위치의 단계·풍속·돌풍·풍향, 아래 카드 = 진행 방향 150 m 안에서 단계가 달라지는 첫 길목
 
+## 지도 기능 (네이버지도·카카오맵 흐름 참고)
+
+- **검색(자동완성)**: 위 카드의 돋보기 → 두 글자만 쳐도 결과가 뜸, 엔터는 첫 결과 선택. 기본 공급자는 Photon(OpenStreetMap, 키 없음). 최근 검색 10개 기억.
+  - **한국 장소·주소 품질을 네이버·카카오 수준으로**: 카카오 로컬로 바꾸면 됨(무료). developers.kakao.com → 앱 만들기 → [앱 키] **JavaScript 키** 복사 → [플랫폼] Web 사이트 도메인에 `https://아이디.github.io` 등록 → `js/app.js` `CONFIG.search.kakaoKey`에 붙여넣기. 검색·주소 찾기 모두 카카오로 바뀌고, 실패하면 자동으로 OpenStreetMap으로 돌아감.
+  - Nominatim은 정책상 자동완성 금지·초당 1회라 예비용으로만 남김(`CONFIG.search.provider = 'nominatim'`).
+- **장소 시트**: 이름·종류·주소, 내 위치에서 거리, 그 앞 길의 바람 단계·풍속. [도보 길찾기] [공유] (공유 링크를 열면 그 장소가 바로 뜸).
+- **길게 누르기 / 우클릭**: 핀을 꽂고 주소를 찾아줌 → 거기로 길찾기.
+- **배경 지도 장소(상호·역) 탭**: 이름·종류 시트. **바람 길 탭**: 그 길목의 단계·풍속·돌풍.
+- **도보 길찾기**: Valhalla 공개 서버(키 없음, 한국어 안내). 경로를 길목 단계 색으로 칠하고, 단계별 거리 막대와 '노출 점수'(잔잔 0·주의 1·강풍 3·위험 6 × 거리)로 대안 경로 순위를 매김 → **바람 덜 맞는 길 / 가장 빠른 길** 칩으로 전환. 안내 중엔 아래 카드가 '경로 기준 다음 길목'으로 바뀜. (자전거 앱 Headwind·BikeWind가 바람을 고려해 경로를 고르는 것과 같은 발상을 보행자·길목 단위로.)
+- **우측 버튼**: 확대·축소·3D 기울이기. 우하단 내 위치.
+- 지도 회전·나침반 모드는 일부러 뺐다 — 북쪽 고정이어야 풍향이 그대로 읽힌다.
+
 ## 왜 이렇게 그리나 (근거)
 
 - 격자 화살표는 방향·경로 판단 성적이 가장 나빴고, 흐름선(적분곡선)을 보여주는 방식이 가장 좋았다 — Laidlaw et al., *Comparing 2D vector field visualization methods: a user study*, IEEE TVCG 2005. → 길마다 화살표를 찍지 않고 길을 따라 흐르는 선으로 보여줌.
@@ -52,6 +64,8 @@ Claude Code에서 하려면 폴더 안에서: `git init && git add -A && git com
 | 항목 | 지금 | 더 정확하게 하려면 |
 |---|---|---|
 | 지도 | OpenFreeMap 벡터 지도 (OpenStreetMap) | — |
+| 검색·주소 | Photon (OpenStreetMap) — 자동완성 됨, 한국 도로명주소는 OSM에 없는 곳이 있음 | 카카오 로컬(JavaScript 키, 무료) — `CONFIG.search.kakaoKey` 한 줄 |
+| 도보 경로 | Valhalla 공개 서버 (OpenStreetMap 보행 네트워크) | — |
 | 길·건물 | 배경 지도 타일 안의 OpenStreetMap 데이터를 그대로 사용(요청 없음). 래스터 배경일 때만 Overpass API로 받음 | 건물 높이는 OSM에 층수가 없으면 3층으로 가정 |
 | 배경 바람 | **Open-Meteo 예보 모델값** (실측 아님, 15분~1시간 단위) | 기상청 AWS 1분 관측 연결 (아래) |
 | 길목별 풍속 | **휴리스틱**: 길 축과 바람 각도 + 길 폭 (`js/model.js` `PARAMS`) | windfield.py 래스터 연결 (아래) |
@@ -78,6 +92,9 @@ js/model.js           길목별 풍속·흐름 방향·단계, 래스터 어댑�
 js/app.js             지도·위치·나침반·카드 (설정은 맨 위 CONFIG)
 js/mock.js            모의 데이터 (?mock=1)
 js/particles.js       길 위를 흐르는 입자 캔버스 (방향·세기)
+js/places.js          검색·주소 (Photon / 카카오 / Nominatim), 최근 검색
+js/route.js           도보 길찾기 (Valhalla), 경로 바람 프로필·대안 순위
+js/nav.js             검색 화면·장소/경로 시트·핀·줌/3D 버튼
 vendor/               MapLibre GL JS 5.24 (지도 엔진)
 manifest.webmanifest  홈 화면 추가용
 sw.js                 앱 파일 캐시 (지도·바람 데이터는 캐시 안 함)

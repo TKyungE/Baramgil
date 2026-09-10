@@ -6,10 +6,10 @@ const vm = require('vm');
 const ctx = { window: {}, console, localStorage: null };
 ctx.window = ctx;
 vm.createContext(ctx);
-for (const f of ['geo.js', 'streets.js', 'model.js', 'mock.js']) {
+for (const f of ['geo.js', 'streets.js', 'model.js', 'mock.js', 'places.js', 'route.js']) {
   vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'js', f), 'utf8'), ctx, { filename: f });
 }
-const { Geo, Streets, Model, Mock } = ctx;
+const { Geo, Streets, Model, Mock, Places, Route } = ctx;
 
 let fails = 0, n = 0;
 function eq(name, got, exp, tol) {
@@ -204,6 +204,58 @@ const vtChunks = Streets.chunkWays(vt.ways);
 eq('vt chunk: 동서 큰길 이름 = 디지털로 (name:ko 우선)', vtChunks.find(x => x.cls === 'wide').name, '디지털로');
 eq('vt chunk: 남북 골목 이름 없음(가산로는 200 m 북쪽)', vtChunks.find(x => x.cls === 'alley' && Math.abs(x.axis) < 1).name, '');
 eq('vt chunk: service 조각도 alley', vtChunks.filter(x => x.cls === 'alley').length >= 3, true);
+
+
+// --- 폴리라인 해독 (구글 문서 예제, precision 5)
+const dec5 = Geo.decodePolyline('_p~iF~ps|U_ulLnnqC_mqNvxq`@', 5);
+eq('polyline5 3 pts', dec5.length, 3);
+eq('polyline5 pt0', dec5[0], [-120.2, 38.5]);
+eq('polyline5 pt2 lat', dec5[2][1], 43.252, 1e-9);
+eq('polyline5 pt2 lon', dec5[2][0], -126.453, 1e-9);
+// precision 6 왕복: 인코더로 만든 문자열을 해독
+function enc(coords, prec) { const f = Math.pow(10, prec); let out = '', plat = 0, plon = 0;
+  const encv = v => { v = v < 0 ? ~(v << 1) : (v << 1); let s = ''; while (v >= 0x20) { s += String.fromCharCode((0x20 | (v & 0x1f)) + 63); v >>= 5; } return s + String.fromCharCode(v + 63); };
+  for (const [lon, lat] of coords) { const la = Math.round(lat * f), lo = Math.round(lon * f); out += encv(la - plat) + encv(lo - plon); plat = la; plon = lo; } return out; }
+const pts6 = [[126.8826, 37.4816], [126.8831, 37.4822], [126.8840, 37.4822]];
+const dec6 = Geo.decodePolyline(enc(pts6, 6), 6);
+eq('polyline6 roundtrip', dec6.map(p => p.map(v => +v.toFixed(6))), pts6);
+// densify
+const dn = Geo.densify([c, Geo.destination(c, 90, 100)], 15);
+eq('densify count (100 m / 15 → 7 +1)', dn.length, 8);
+eq('densify last s = 100', dn[dn.length - 1].s, 100, 0.01);
+
+// --- 경로 바람 프로필 (mock 격자: 북풍 7.5 → 남북 골목 강풍)
+const comp2 = Streets.chunkWays(Mock.ways(c)).map(ch => Object.assign({}, ch, Model.localWind(ch, Mock.wind(), null)));
+comp2._idx = Model.buildIndex(comp2);
+// 경로: 디지털로(동서, 잔잔)를 서쪽으로 100 m → 디지털로9길(남북, 강풍)을 북쪽으로 150 m
+const r1 = { coords: [Geo.destination(c, 90, 40), Geo.destination(c, 270, 60), Geo.destination(Geo.destination(c, 270, 60), 0, 150)], distance: 250, time: 190, maneuvers: [] };
+const prof = Route.windProfile(r1, comp2, Mock.wind());
+eq('profile total ≈ 250 m', prof.meters.reduce((a, b) => a + b, 0), 250, 3);
+eq('profile has 강풍 meters ~150', prof.meters[2], 150, 20);
+eq('profile has 잔잔 meters ~100', prof.meters[0], 100, 20);
+eq('profile exposure = 3×강풍', prof.exposure, prof.meters[2] * 3 + prof.meters[1] * 1 + prof.meters[3] * 6, 3);
+eq('profile geojson merged into ≤3 lines', prof.geojson.features.length <= 3 && prof.geojson.features.length >= 2, true);
+// 대안 순위
+const r2 = { coords: [Geo.destination(c, 90, 40), Geo.destination(c, 270, 60)], distance: 100, time: 75, maneuvers: [] };
+r1.profile = prof; r2.profile = Route.windProfile(r2, comp2, Mock.wind());
+const ranked = Route.rank([r1, r2]);
+eq('rank: calmest first', ranked[0], r2);
+eq('rank: r2 label 가장 빠른+바람 적음', r2.label, '가장 빠른 길 · 바람도 가장 적음');
+eq('rank: r1 label 다른 길', r1.label, '다른 길');
+// 경로 기준 다음 길목: 디지털로 위(잔잔)에서 → 60 m 뒤 골목 진입(강풍)
+const curOnRoad = { chunk: null, level: Model.LEVELS[0] };
+const ah = Route.aheadOnRoute(Geo.destination(c, 90, 30), prof, curOnRoad, 150);
+eq('aheadOnRoute finds 강풍', ah && ah.level.name, '강풍');
+eq('aheadOnRoute dist ~90 m', ah && ah.dist, 90, 20);
+eq('aheadOnRoute off-route → undefined', Route.aheadOnRoute(Geo.destination(c, 180, 300), prof, curOnRoad, 150), undefined);
+eq('fmtTime 190s → 3분', Route.fmtTime(190), '3분');
+eq('fmtDist 1250 → 1.3 km', Route.fmtDist(1250), '1.3 km');
+
+// --- 장소 정규화
+const nr = Places.normalize({ lat: '37.4816', lon: '126.8826', name: '가산디지털단지역', display_name: '가산디지털단지역, 가산디지털1로, 가산동, 금천구, 서울특별시, 08505, 대한민국', category: 'railway', type: 'station' });
+eq('place name', nr.name, '가산디지털단지역');
+eq('place category 역', nr.category, '역');
+eq('place address starts with 서울특별시', nr.address.startsWith('서울특별시'), true);
 
 console.log(`(건물 포함) ${n - fails}/${n} passed`);
 process.exit(fails ? 1 : 0);
