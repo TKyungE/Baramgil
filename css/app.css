@@ -60,9 +60,12 @@ html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink);
 .locate.on { color: var(--ink); }
 
 /* 내 위치 마커 */
-.me { width: 60px; height: 60px; position: relative; }
-.me-wedge { position: absolute; inset: 0; opacity: 0; transition: opacity 0.3s; will-change: transform;
-  background: conic-gradient(from -28deg at 50% 50%, rgba(28,27,24,0.16) 0deg, rgba(28,27,24,0.16) 56deg, transparent 56deg);
+.me { width: 60px; height: 60px; position: relative; pointer-events: none; }
+/* 원뿔: 회전 중심에서 멀어질수록 옅어지는 부채꼴 (Apple 지도식). 회전은 JS가 매 프레임 transform 으로 */
+.me-wedge { position: absolute; inset: -16px; opacity: 0; transition: opacity 0.3s; will-change: transform; transform-origin: 50% 50%;
+  background: conic-gradient(from -27deg at 50% 50%, rgba(28,27,24,0.30) 0deg, rgba(28,27,24,0.30) 54deg, transparent 54deg);
+  -webkit-mask-image: radial-gradient(circle at 50% 50%, rgba(0,0,0,1) 10%, rgba(0,0,0,0.6) 42%, rgba(0,0,0,0) 70%);
+  mask-image: radial-gradient(circle at 50% 50%, rgba(0,0,0,1) 10%, rgba(0,0,0,0.6) 42%, rgba(0,0,0,0) 70%);
   border-radius: 50%; }
 .me-dot { position: absolute; left: 50%; top: 50%; width: 18px; height: 18px; margin: -9px 0 0 -9px; border-radius: 50%;
   background: var(--ink); border: 3px solid #fff; box-shadow: 0 1px 4px rgba(0,0,0,0.3); }

@@ -284,7 +284,7 @@
   }
   function setCompass(h) {
     S.compass = h; S.compassTime = Date.now();
-    kickHeading(); // 부채꼴은 매 프레임 부드럽게 따라감
+    feedHeading(h); // 부채꼴은 필터를 거쳐 매 프레임 부드럽게 따라감
     // 다음 길목 탐색(계산 비용 큼)은 3도 이상 바뀌고 250 ms 지났을 때만
     const now = Date.now();
     if (lastNextHeading !== null && Geo.angDiff(lastNextHeading, h) < 3) return;
@@ -296,34 +296,50 @@
     if (S.compass !== null && Date.now() - S.compassTime < 5000) return S.compass;
     return S.moveBearing;
   }
-  /* 표시용 방위 보간: 나침반 값(목표)과 화면에 그리는 값을 분리해 매 프레임 최단 회전 방향으로
-   * 지수 보간(시상수 0.12 s). 급히 돌려도 툭툭 끊기지 않고, 목표에 닿으면 루프를 멈춰 CPU 를 안 씀. */
-  let shownHeading = null, headingAnim = 0, lastHeadingFrame = 0;
+  /* 표시용 방위: 1€ 필터 (Casiez·Roussel·Vogel, CHI 2012)
+   *  가만히 있을 땐 나침반 떨림(±2~3°)을 죽이고, 빨리 돌릴 땐 차단 주파수를 올려 지연 없이 따라간다.
+   *  각도는 최단 회전 방향으로 '풀어서'(unwrap) 연속값으로 만든 뒤 걸러서, 359°→1° 에서도 튀지 않는다.
+   *  나침반 이벤트가 오는 동안엔 매 프레임 그리고, 400 ms 동안 조용하면 루프를 멈춘다(CPU 절약). */
+  function oneEuro(minCutoff, beta, dCutoff) {
+    let xPrev = null, dxPrev = 0, tPrev = 0;
+    const alpha = (cutoff, dt) => { const tau = 1 / (2 * Math.PI * cutoff); return 1 / (1 + tau / dt); };
+    const f = function (x, t) {
+      if (xPrev === null) { xPrev = x; tPrev = t; return x; }
+      const dt = Math.max(0.001, (t - tPrev) / 1000); tPrev = t;
+      const dx = (x - xPrev) / dt;
+      const aD = alpha(dCutoff, dt);
+      const dxHat = aD * dx + (1 - aD) * dxPrev; dxPrev = dxHat;
+      const a = alpha(minCutoff + beta * Math.abs(dxHat), dt);
+      xPrev = a * x + (1 - a) * xPrev;
+      return xPrev;
+    };
+    f.reset = () => { xPrev = null; dxPrev = 0; };
+    return f;
+  }
+  const headingFilter = oneEuro(0.9, 0.015, 1.0);
+  let rawUnwrapped = null, lastRaw = null, lastHeadingEvent = 0, shownHeading = null, headingAnim = 0;
+  function feedHeading(h) {
+    if (lastRaw === null) { rawUnwrapped = h; lastRaw = h; }
+    else { rawUnwrapped += ((h - lastRaw + 540) % 360) - 180; lastRaw = h; } // 최단 회전으로 누적
+    lastHeadingEvent = performance.now();
+    kickHeading();
+  }
   function animateHeading(now) {
     headingAnim = 0;
-    const target = heading();
-    if (target === null) { el.meWedge.style.opacity = '0'; shownHeading = null; return; }
+    if (heading() === null) { el.meWedge.style.opacity = '0'; shownHeading = null; lastRaw = null; headingFilter.reset(); return; }
     el.meWedge.style.opacity = '1';
-    if (shownHeading === null) shownHeading = target;
-    let dt = (now - lastHeadingFrame) / 1000;
-    lastHeadingFrame = now;
-    if (!(dt > 0)) dt = 0.016;
-    dt = Math.min(dt, 0.1);
-    const diff = ((target - shownHeading + 540) % 360) - 180; // -180..180 (최단 회전)
-    const k = 1 - Math.exp(-dt / 0.12);
-    shownHeading = (shownHeading + diff * k + 360) % 360;
+    let v = headingFilter(rawUnwrapped, now);
+    const settled = Math.abs(v - rawUnwrapped) < 0.15;
+    if (settled && now - lastHeadingEvent >= 400) v = rawUnwrapped; // 멈출 땐 정확한 값에 붙임
+    shownHeading = ((v % 360) + 360) % 360;
     el.meWedge.style.transform = 'rotate(' + shownHeading.toFixed(2) + 'deg)';
-    if (Math.abs(diff) > 0.2) headingAnim = requestAnimationFrame(animateHeading);
-    else { shownHeading = target; el.meWedge.style.transform = 'rotate(' + target.toFixed(2) + 'deg)'; }
+    if (!settled || now - lastHeadingEvent < 400) headingAnim = requestAnimationFrame(animateHeading);
   }
-  function kickHeading() {
-    if (headingAnim) return;
-    lastHeadingFrame = performance.now();
-    headingAnim = requestAnimationFrame(animateHeading);
-  }
+  function kickHeading() { if (!headingAnim) headingAnim = requestAnimationFrame(animateHeading); }
   let headingRaf = 0;
   function updateHeadingUI() {
-    kickHeading();
+    const h = heading();
+    if (h !== null) feedHeading(h); else kickHeading();
     if (headingRaf) return;
     headingRaf = requestAnimationFrame(() => {
       headingRaf = 0;
