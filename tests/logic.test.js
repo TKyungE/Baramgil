@@ -6,10 +6,10 @@ const vm = require('vm');
 const ctx = { window: {}, console, localStorage: null };
 ctx.window = ctx;
 vm.createContext(ctx);
-for (const f of ['geo.js', 'streets.js', 'model.js', 'mock.js', 'places.js', 'route.js']) {
+for (const f of ['geo.js', 'wind.js', 'streets.js', 'model.js', 'mock.js', 'places.js', 'route.js']) {
   vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'js', f), 'utf8'), ctx, { filename: f });
 }
-const { Geo, Streets, Model, Mock, Places, Route } = ctx;
+const { Geo, Wind, Streets, Model, Mock, Places, Route } = ctx;
 
 let fails = 0, n = 0;
 function eq(name, got, exp, tol) {
@@ -233,15 +233,25 @@ const prof = Route.windProfile(r1, comp2, Mock.wind());
 eq('profile total ≈ 250 m', prof.meters.reduce((a, b) => a + b, 0), 250, 3);
 eq('profile has 강풍 meters ~150', prof.meters[2], 150, 20);
 eq('profile has 잔잔 meters ~100', prof.meters[0], 100, 20);
-eq('profile exposure = 3×강풍', prof.exposure, prof.meters[2] * 3 + prof.meters[1] * 1 + prof.meters[3] * 6, 3);
+eq('profile exposure = 강풍 m + 위험×3 + 주의×0.15', prof.exposure, Math.round(prof.meters[2] * 1 + prof.meters[3] * 3 + prof.meters[1] * 0.15), 3);
+eq('profile strong meters', prof.strong, prof.meters[2] + prof.meters[3], 1);
 eq('profile geojson merged into ≤3 lines', prof.geojson.features.length <= 3 && prof.geojson.features.length >= 2, true);
 // 대안 순위
 const r2 = { coords: [Geo.destination(c, 90, 40), Geo.destination(c, 270, 60)], distance: 100, time: 75, maneuvers: [] };
 r1.profile = prof; r2.profile = Route.windProfile(r2, comp2, Mock.wind());
 const ranked = Route.rank([r1, r2]);
 eq('rank: calmest first', ranked[0], r2);
-eq('rank: r2 label 가장 빠른+바람 적음', r2.label, '가장 빠른 길 · 바람도 가장 적음');
+eq('rank: r2 label 가장 빠른+센 바람 적음', r2.label, '가장 빠른 길 · 센 바람도 가장 적음');
 eq('rank: r1 label 다른 길', r1.label, '다른 길');
+// 우회 상한: 센 바람 피하는 길이 1.4배 넘게 느리면 기본 선택은 빠른 길
+const rSlowCalm = { coords: r2.coords, distance: 400, time: 300, maneuvers: [], profile: { exposure: 0, strong: 0, meters: [400, 0, 0, 0] } };
+const rFastWindy = { coords: r1.coords, distance: 200, time: 150, maneuvers: [], profile: { exposure: 150, strong: 150, meters: [50, 0, 150, 0] } };
+let rk = Route.rank([rFastWindy, rSlowCalm]);
+eq('detour cap: 2.0× slower calm route → fastest first', rk[0], rFastWindy);
+eq('detour cap: calm still labeled', rSlowCalm.label, '센 바람 피하는 길');
+rSlowCalm.time = 200;
+rk = Route.rank([rFastWindy, rSlowCalm]);
+eq('within cap (1.33×): calm first', rk[0], rSlowCalm);
 // 경로 기준 다음 길목: 디지털로 위(잔잔)에서 → 60 m 뒤 골목 진입(강풍)
 const curOnRoad = { chunk: null, level: Model.LEVELS[0] };
 const ah = Route.aheadOnRoute(Geo.destination(c, 90, 30), prof, curOnRoad, 150);
@@ -257,5 +267,72 @@ eq('place name', nr.name, '가산디지털단지역');
 eq('place category 역', nr.category, '역');
 eq('place address starts with 서울특별시', nr.address.startsWith('서울특별시'), true);
 
-console.log(`(건물 포함) ${n - fails}/${n} passed`);
-process.exit(fails ? 1 : 0);
+// --- 예보 (15분 단위 6시간)
+const T0 = Date.UTC(2026, 8, 10, 5, 0, 0); // 14:00 KST
+const series = { time: [T0 / 1000, T0 / 1000 + 900, T0 / 1000 + 1800, T0 / 1000 + 2700], wind_speed_10m: [2, 4, null, 8], wind_direction_10m: [350, 10, 20, 30], wind_gusts_10m: [3, 6, 7, 12] };
+const fc = Wind.parseSeries(series);
+eq('parseSeries: null 값은 건너뜀', fc.length, 3);
+eq('parseSeries: unixtime 초 → ms', fc[0].t, T0);
+eq('parseSeries: 값', [fc[1].speed, fc[1].dir, fc[1].gust], [4, 10, 6]);
+eq('parseSeries: 빈 입력', Wind.parseSeries(null), []);
+eq('parseSeries: 돌풍 없으면 1.5배', Wind.parseSeries({ time: [T0 / 1000], wind_speed_10m: [4], wind_direction_10m: [0] })[0].gust, 6);
+let fa = Wind.at(fc, T0 + 450e3); // 첫 구간 중간 (14:07:30)
+eq("at: 풍속 선형 보간", fa.speed, 3, 1e-9);
+eq("at: 풍향 최단 호 보간 350→10 = 0", fa.dir, 0, 1e-9);
+eq("at: 돌풍 보간", fa.gust, 4.5, 1e-9);
+fa = Wind.at(fc, T0 + 900e3 + 1350e3); // 14:15 → 14:45 구간(30분)의 3/4 지점 (null 이 빠져 구간이 넓어짐)
+eq("at: 빠진 값 건너 넓은 구간 보간", fa.speed, 7, 1e-9);
+eq('at: 정확히 자료 시각', Wind.at(fc, T0 + 900e3).speed, 4);
+eq('at: 마지막 자료 뒤 → null', Wind.at(fc, T0 + 2700e3 + 1), null);
+eq('at: 첫 자료 1시간 이내 앞 → 첫 값', Wind.at(fc, T0 - 600e3).speed, 2);
+eq('at: 첫 자료 1시간 넘게 앞 → null', Wind.at(fc, T0 - 3700e3), null);
+eq('at: 빈 예보 → null', Wind.at([], T0), null);
+eq('at: 풍향 보간 wrap 200→340 중간 = 270', Wind.at([{ t: 0, speed: 1, dir: 200, gust: 1 }, { t: 100, speed: 1, dir: 340, gust: 1 }], 50).dir, 270, 1e-9);
+const sl = Wind.slots(fc, T0 + 60e3);
+eq('slots: 24칸', sl.length, 24);
+eq('slots: 1번째 칸 = 지금+15분', sl[0].t, T0 + 60e3 + 900e3);
+eq('slots: 자료 밖은 null', sl[23], null);
+eq('slots: 자료 안 개수 (14:01 기준 14:45 까지 → 2칸)', sl.filter(Boolean).length, 2);
+eq('상수: 6시간 · 15분 · 24칸', [Wind.HORIZON_MIN, Wind.STEP_MIN, Wind.SLOTS], [360, 15, 24]);
+// 모의 예보: 7시간 이상, 15분 간격, 단계가 잔잔~위험 사이를 오감
+const mf = Mock.forecast(T0 + 400e3);
+eq('mock forecast: 29개(7시간)', mf.length, 29);
+eq('mock forecast: 15분 간격', mf[1].t - mf[0].t, 900e3);
+eq('mock forecast: 현재 15분 구간에서 시작', mf[0].t, T0);
+const mfSlots = Wind.slots(mf, T0 + 400e3);
+eq('mock forecast: 6시간 뒤까지 모두 있음', mfSlots.every(Boolean), true);
+const lvls = new Set(mfSlots.map(p => Model.level(p.speed).name));
+eq('mock forecast: 단계가 여러 개 등장', lvls.size >= 3, true);
+// Open-Meteo 응답 파싱 (fetch 흉내)
+const omResp = { current: { time: T0 / 1000, wind_speed_10m: 5.5, wind_direction_10m: 300, wind_gusts_10m: 9 }, minutely_15: series };
+ctx.fetch = async url => ({ ok: true, status: 200, json: async () => { ctx.lastUrl = url; return omResp; } });
+(async () => {
+  const r = await Wind.OpenMeteo.fetch(37.4816, 126.8826, {});
+  eq('OpenMeteo: current 파싱', [r.current.speed, r.current.dir, r.current.gust, r.current.time], [5.5, 300, 9, T0]);
+  eq('OpenMeteo: forecast 파싱', r.forecast.length, 3);
+  eq('OpenMeteo: 요청에 minutely_15·unixtime·28칸', /minutely_15=wind_speed_10m/.test(ctx.lastUrl) && /forecast_minutely_15=28/.test(ctx.lastUrl) && /timeformat=unixtime/.test(ctx.lastUrl), true);
+  eq('OpenMeteo: 모델 미지정이면 models 없음', /models=/.test(ctx.lastUrl), false);
+  await Wind.OpenMeteo.fetch(37.4816, 126.8826, { model: 'kma_seamless' });
+  eq('OpenMeteo: 모델 지정', /models=kma_seamless/.test(ctx.lastUrl), true);
+  // 모델 지정 요청이 실패하면 기본 모델로 재시도
+  let calls = 0;
+  ctx.fetch = async url => { calls++; if (/models=/.test(url)) return { ok: false, status: 400, json: async () => ({ error: true, reason: 'bad model' }) }; return { ok: true, status: 200, json: async () => omResp }; };
+  const r2 = await Wind.OpenMeteo.fetch(37.4816, 126.8826, { model: 'nope' });
+  eq('OpenMeteo: 모델 실패 → 기본으로 재시도', [calls, r2.current.speed], [2, 5.5]);
+  // 프록시: 현재값만 주면 예보는 Open-Meteo 에서
+  ctx.fetch = async url => /proxy/.test(url) ? { ok: true, status: 200, json: async () => ({ speed: 3.3, dir: 90, gust: 5, time: '2026-09-10T14:03:00+09:00', source: '기상청 AWS' }) } : { ok: true, status: 200, json: async () => omResp };
+  const r3 = await Wind.fetchAll(37.48, 126.88, { kmaProxyUrl: 'https://x/proxy' });
+  eq('fetchAll: 프록시 현재값 + Open-Meteo 예보', [r3.current.source, r3.current.speed, r3.forecast.length, r3.source], ['기상청 AWS', 3.3, 3, 'Open-Meteo']);
+  // 프록시가 예보(1시간 간격)까지 주면 그대로 (15분 보간은 at 이 담당)
+  ctx.fetch = async () => ({ ok: true, status: 200, json: async () => ({ speed: 3, dir: 90, gust: 5, source: '기상청', forecast: [{ time: T0 / 1000, speed: 3, dir: 90, gust: 5 }, { time: T0 / 1000 + 3600, speed: 5, dir: 90, gust: 8 }] }) });
+  const r4 = await Wind.fetchAll(37.48, 126.88, { kmaProxyUrl: 'https://x/proxy' });
+  eq('fetchAll: 프록시 예보 사용', [r4.source, r4.forecast.length, Wind.at(r4.forecast, T0 + 1800e3).speed], ['기상청', 2, 4]);
+  // 프록시 실패 → Open-Meteo
+  ctx.fetch = async url => /proxy/.test(url) ? { ok: false, status: 500, json: async () => ({}) } : { ok: true, status: 200, json: async () => omResp };
+  const r5 = await Wind.fetchAll(37.48, 126.88, { kmaProxyUrl: 'https://x/proxy' });
+  eq('fetchAll: 프록시 실패 → Open-Meteo', [r5.current.source, r5.forecast.length], ['Open-Meteo', 3]);
+  eq('fetchCurrent 호환', (await Wind.fetchCurrent(37.48, 126.88, {})).speed, 5.5);
+
+  console.log(`(건물 포함) ${n - fails}/${n} passed`);
+  process.exit(fails ? 1 : 0);
+})().catch(e => { console.log('FAIL (exception)', e); process.exit(1); });

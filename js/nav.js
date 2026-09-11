@@ -13,7 +13,7 @@
       search: $('search'), input: $('search-input'), list: $('search-list'), hint: $('search-hint'),
       btnSearch: $('btn-search'), back: $('search-back'), clear: $('search-clear'),
       sheet: $('sheet'), sheetBody: $('sheet-body'), sheetClose: $('sheet-close'),
-      next: $('next'), legend: $('legend'),
+      next: $('next'), legend: $('legend'), tl: $('tl'),
       zin: $('zoom-in'), zout: $('zoom-out'), tilt: $('tilt')
     };
     el.btnSearch.addEventListener('click', openSearch);
@@ -144,7 +144,7 @@
       + '<div class="sh-sub">' + esc([item.category, item.address].filter(Boolean).join(' · ') || '주소 확인 중…') + '</div>'
       + '<div class="sh-row">'
       + (dist !== null ? '<span>내 위치에서 ' + Route.fmtDist(dist) + '</span>' : '')
-      + (w ? '<span><i class="dot" style="background:' + w.level.color + '"></i>' + w.level.name + ' ' + w.speed.toFixed(1) + ' m/s · 돌풍 ' + Math.round(w.gust) + (w.name ? ' · ' + esc(w.name) : '') + '</span>' : '<span class="muted">바람 정보는 화면 안 길에서만</span>')
+      + (w ? '<span><i class="dot" style="background:' + w.level.color + '"></i>' + w.level.name + ' ' + w.speed.toFixed(1) + ' m/s · 돌풍 ' + Math.round(w.gust) + (w.name ? ' · ' + esc(w.name) : '') + fcTag() + '</span>' : '<span class="muted">바람 정보는 화면 안 길에서만</span>')
       + '</div>'
       + '<div class="sh-actions"><button id="sh-route" class="btn primary">도보 길찾기</button><button id="sh-share" class="btn">공유</button></div>';
     $('sh-route').addEventListener('click', () => startRoute(item));
@@ -212,7 +212,8 @@
   }
   function renderRouteSheet() {
     const rs = Nav.state.routes, a = active();
-    const chips = rs.map((r, i) => '<button class="chip' + (i === Nav.state.active ? ' on' : '') + '" data-i="' + i + '">' + esc(r.label) + ' <small>' + Route.fmtTime(r.time) + '</small></button>').join('');
+    const chips = rs.map((r, i) => '<button class="chip' + (i === Nav.state.active ? ' on' : '') + '" data-i="' + i + '">' + esc(r.label)
+      + ' <small>' + Route.fmtTime(r.time) + ' · 강풍↑ ' + Route.fmtDist(r.profile.strong) + '</small></button>').join('');
     const m = a.profile.meters, total = Math.max(1, m.reduce((x, y) => x + y, 0));
     const bar = Model.LEVELS.map(l => '<i style="width:' + (m[l.key] / total * 100).toFixed(1) + '%;background:' + l.color + '"></i>').join('');
     const parts = Model.LEVELS.filter(l => m[l.key] > 0).map(l => '<span><i class="dot" style="background:' + l.color + '"></i>' + l.name + ' ' + Route.fmtDist(m[l.key]) + '</span>').join('');
@@ -221,7 +222,7 @@
       '<div class="chips">' + chips + '</div>'
       + '<div class="sh-title">도보 ' + Route.fmtTime(a.time) + ' <span class="sh-dim">· ' + Route.fmtDist(a.distance) + ' · ' + esc(Nav.state.dest.name || '목적지') + '</span></div>'
       + '<div class="windbar">' + bar + '</div>'
-      + '<div class="sh-row">' + parts + '</div>'
+      + '<div class="sh-row">' + parts + (fcTag() ? '<span>' + fcTag() + '</span>' : '') + '</div>'
       + '<div id="sh-next" class="sh-next"></div>'
       + '<details class="steps"><summary>경로 안내 ' + a.maneuvers.length + '단계</summary><ol>' + steps + '</ol></details>';
     el.sheetBody.querySelectorAll('.chip').forEach(b => b.addEventListener('click', () => { Nav.state.active = +b.dataset.i; drawRoutes(); renderRouteSheet(); }));
@@ -271,8 +272,15 @@
   };
 
   /* ---------- 시트·길게 누르기 ---------- */
-  function openSheet() { el.sheet.hidden = false; el.next.classList.add('under-sheet'); el.legend.classList.add('under-sheet'); }
-  function closeSheet() { el.sheet.hidden = true; el.next.classList.remove('under-sheet'); el.legend.classList.remove('under-sheet'); if (Nav.state.mode === 'place') { Nav.state.mode = 'idle'; Nav.state.place = null; clearPin(); } }
+  const UNDER = () => [el.next, el.legend, el.tl].filter(Boolean);
+  function openSheet() { el.sheet.hidden = false; for (const x of UNDER()) x.classList.add('under-sheet'); }
+  function closeSheet() { el.sheet.hidden = true; for (const x of UNDER()) x.classList.remove('under-sheet'); if (Nav.state.mode === 'place') { Nav.state.mode = 'idle'; Nav.state.place = null; clearPin(); } }
+  // 예측 시각이 선택돼 있으면 시트의 바람 값도 그 시각 기준 → 표시
+  function fcTag() {
+    if (!S.bg || !S.bg.forecast) return '';
+    const t = ctx.timeLabel ? ctx.timeLabel(S.bg.time) : '';
+    return '<span class="fc-tag">' + (t ? t + ' ' : '') + '예측</span>';
+  }
   function setupLongPress() {
     const cont = map.getCanvasContainer();
     let timer = 0, start = null;

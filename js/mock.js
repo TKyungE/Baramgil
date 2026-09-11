@@ -51,7 +51,18 @@
     return { type: 'FeatureCollection', features: feats };
   }
   function wind() {
-    return { speed: 7.5, dir: 350, gust: 12, time: new Date().toISOString().slice(0, 16), source: '모의' };
+    return { speed: 7.5, dir: 350, gust: 12, time: Date.now(), source: '모의' };
   }
-  window.Mock = { ways, buildings, wind };
+  // 15분 간격 7시간 예보: 잦아들었다가(+1.5h 잔잔) 다시 세지고(+4h 위험 근처) 저녁에 가라앉는 모양. 풍향은 북→북서로 서서히.
+  function forecast(now) {
+    const t0 = Math.floor((now || Date.now()) / 900e3) * 900e3; // 현재 15분 구간 시작
+    const out = [];
+    for (let k = 0; k <= 28; k++) {
+      const h = k / 4; // 시간
+      const speed = 7.5 - 4.5 * Math.exp(-((h - 1.5) ** 2) / 0.8) + 2.5 * Math.exp(-((h - 4) ** 2) / 1.2) - 0.35 * Math.max(0, h - 4.5);
+      out.push({ t: t0 + k * 900e3, speed: +speed.toFixed(2), dir: (350 - 50 * Math.min(1, h / 6) + 360) % 360, gust: +(speed * 1.5 + 1).toFixed(2) });
+    }
+    return out;
+  }
+  window.Mock = { ways, buildings, wind, forecast };
 })();

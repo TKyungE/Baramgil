@@ -2,6 +2,7 @@
 (function () {
   const CONFIG = {
     kmaProxyUrl: '',                    // 기상청 프록시 URL (비우면 Open-Meteo 사용) — README 참고
+    model: '',                          // Open-Meteo 모델 지정: '' = 자동(best_match) | 'kma_seamless' = 기상청 LDPS(1.5 km, 1시간 → 15분 보간)
     rasterManifest: '',                 // 'data/manifest.json' 로 두면 정밀 래스터 사용 (model.js 참고)
     fetchRadius: 700,                   // 길 데이터를 받아올 반경 (m)
     refetchMove: 350,                   // 이만큼 이동하면 길 데이터 다시 받음 (m)
@@ -53,7 +54,11 @@
     compassTime: 0,
     moveBearing: null,    // 이동 방향 (도) 또는 null
     lastMovePos: null,
-    bg: null,             // 배경 바람
+    bg: null,             // 지금 지도에 적용된 배경 바람 (= live 또는 선택한 예측 시각의 값)
+    live: null,           // 현재(관측/모델) 배경 바람
+    forecast: [],         // 예보 [{ t, speed, dir, gust }] (15분 간격, 6시간+)
+    forecastSource: '',
+    slot: 0,              // 선택한 타임라인 칸: 0 = 지금, k = k×15분 뒤 (최대 24 = 6시간)
     bgTime: 0,
     chunks: [],
     buildings: null,      // GeoJSON
@@ -72,8 +77,9 @@
   const el = {
     start: $('start'), btnStart: $('btn-start'), btnSim: $('btn-sim'),
     now: $('now'), nowDot: $('now-dot'), nowLevel: $('now-level'), nowSpeed: $('now-speed'), nowTime: $('now-time'),
-    nowGust: $('now-gust'), nowArrow: $('now-arrow'), nowDir: $('now-dir'), nowPlace: $('now-place'),
+    nowGust: $('now-gust'), nowArrow: $('now-arrow'), nowDir: $('now-dir'), nowPlace: $('now-place'), nowFc: $('now-fc'),
     next: $('next'), nextDot: $('next-dot'), nextTitle: $('next-title'), nextSub: $('next-sub'),
+    tl: $('tl'), tlWhen: $('tl-when'), tlClock: $('tl-clock'), tlNow: $('tl-now'), tlBars: $('tl-bars'), tlTicks: $('tl-ticks'),
     locate: $('locate'), toast: $('toast'), me: $('me'), meWedge: $('me-wedge')
   };
 
@@ -88,8 +94,9 @@
     maxPitch: 60,
     pitchWithRotate: false,
     dragRotate: false,
-    attributionControl: { compact: true, customAttribution: WIND_ATTR }
+    attributionControl: false
   });
+  map.addControl(new maplibregl.AttributionControl({ compact: true, customAttribution: WIND_ATTR }), 'bottom-left');
   map.touchZoomRotate.disableRotation();
   if (!CONFIG.buildings3d) map.touchPitch.disable();
 
@@ -137,9 +144,9 @@
     add({
       id: 'wind-line', type: 'line', source: 'wind',
       layout: { 'line-cap': 'round', 'line-join': 'round' },
-      paint: { 'line-color': ['get', 'color'], 'line-width': widthExpr(1, 0), 'line-opacity': 0.92 }
+      paint: { 'line-color': ['coalesce', ['feature-state', 'color'], '#c9c5bb'], 'line-width': widthExpr(1, 0), 'line-opacity': 0.92 }
     });
-    if (S.windGeoJSON) map.getSource('wind').setData(S.windGeoJSON);
+    if (S.windGeoJSON) { map.getSource('wind').setData(S.windGeoJSON); applyWindStates(); }
     if (!S.particles) {
       S.particles = Particles.create(map, map.getContainer());
       if (S.computed.length) { S.particles.setTracks(S.computed); S.particles.start(); }
@@ -157,12 +164,15 @@
     if (window.Nav && Nav.handleClick(e)) return;
     const hit = map.getLayer('wind-line') ? map.queryRenderedFeatures([[e.point.x - 10, e.point.y - 10], [e.point.x + 10, e.point.y + 10]], { layers: ['wind-line'] }) : [];
     if (hit.length) {
-      const p = hit[0].properties;
-      const lv = Model.LEVELS[p.level] || Model.LEVELS[0];
-      popup.setLngLat(e.lngLat).setHTML(
-        '<div class="pop"><b style="color:' + lv.text + '">' + lv.name + '</b> ' + p.speed + ' m/s · 돌풍 ' + p.gust
-        + '<div class="pop-sub">' + (p.name || '이름 없는 길') + (p.arrows ? '' : ' · 바람이 가로지름') + '</div></div>').addTo(map);
-      return;
+      const c = S.computed[hit[0].id]; // feature id = S.computed 인덱스
+      if (c) {
+        const lv = c.level;
+        popup.setLngLat(e.lngLat).setHTML(
+          '<div class="pop"><b style="color:' + lv.text + '">' + lv.name + '</b> ' + c.speed.toFixed(1) + ' m/s · 돌풍 ' + Math.round(c.gust)
+          + (S.bg && S.bg.forecast ? ' <span class="fc-tag">' + timeLabel(S.bg.time) + ' 예측</span>' : '')
+          + '<div class="pop-sub">' + (c.name || '이름 없는 길') + (c.arrows ? '' : ' · 바람이 가로지름') + '</div></div>').addTo(map);
+        return;
+      }
     }
     popup.remove();
     if (SIM) simMoveTo([e.lngLat.lng, e.lngLat.lat]);
@@ -383,10 +393,12 @@
     if (S.bg && Date.now() - S.bgTime < CONFIG.windRefreshMs) return;
     windLoading = true;
     try {
-      if (MOCK) S.bg = Mock.wind();
-      else S.bg = await Wind.fetchCurrent(S.pos[1], S.pos[0], CONFIG);
+      let r;
+      if (MOCK) r = { current: Mock.wind(), forecast: Mock.forecast(), source: '모의' };
+      else r = await Wind.fetchAll(S.pos[1], S.pos[0], CONFIG);
+      S.live = r.current; S.forecast = r.forecast || []; S.forecastSource = r.source || r.current.source;
       S.bgTime = Date.now();
-      recompute();
+      if (!applySlot(S.slot)) applySlot(0); // 선택해 둔 예측 시각을 새 자료로 다시 계산 (자료 범위를 벗어났으면 지금으로)
     } catch (e) {
       console.error(e);
       S.bgTime = Date.now() - CONFIG.windRefreshMs + 60000; // 1분 뒤 재시도
@@ -397,7 +409,116 @@
     clearTimeout(windTimer);
     windTimer = setTimeout(ensureWind, S.bg ? CONFIG.windRefreshMs + 1000 : 60000);
   }
-  document.addEventListener('visibilitychange', () => { if (!document.hidden) ensureWind(); });
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) { ensureWind(); if (S.forecast.length && S.slot > 0 && !applySlot(S.slot)) applySlot(0); } });
+
+  /* ---------- 예측 타임라인 (지금 ~ 6시간 뒤, 15분 단위) ----------
+   * 칸 k 의 배경 바람 = 예보를 (지금 + k×15분) 시각으로 보간한 값. 지도·현재 카드·다음 길목·경로 프로필이 모두 그 시각 기준으로 다시 계산된다.
+   * 막대 = 각 시각에 '내 길목'이 받을 풍속(현재 카드와 같은 규칙), 색 = 단계. Windy 의 하단 타임라인·날씨앱의 시간별 그래프와 같은 자리·같은 조작(끌기·탭). */
+  const SLOT_MS = Wind.STEP_MIN * 60e3;
+  function slotBg(k, now) {
+    if (k === 0) return S.live;
+    const p = Wind.at(S.forecast, now + k * SLOT_MS);
+    if (!p) return null;
+    return { speed: p.speed, dir: p.dir, gust: p.gust, time: p.t, source: S.forecastSource, forecast: true, ahead: k * Wind.STEP_MIN };
+  }
+  function applySlot(k) {
+    const bg = slotBg(k, Date.now());
+    if (!bg) return false;
+    S.slot = k; S.bg = bg;
+    document.body.classList.toggle('tl-on', S.forecast.length > 0 && !!S.live);
+    recompute();
+    return true;
+  }
+  // 내 위치 기준 바람 (현재 카드와 같은 규칙) — 배경 바람 bg 를 넣어 계산
+  function windForBg(bg) {
+    if (!bg) return null;
+    const n = (S.pos && S.computed.length) ? Model.nearestChunk(S.computed, S.pos, 80, null) : null;
+    if (n) { const w = Model.localWind(n.chunk, bg, S.raster); return { speed: w.speed, gust: w.gust, level: w.level }; }
+    const f = S.pos ? 0.6 : 1; // 길에서 먼 트인 곳 (currentWind 와 같은 계수)
+    const sp = bg.speed * f;
+    return { speed: sp, gust: bg.gust * f, level: Model.level(sp) };
+  }
+  function fmtAhead(min) {
+    const h = Math.floor(min / 60), m = min % 60;
+    return (h ? h + '시간' : '') + (m ? (h ? ' ' : '') + m + '분' : '');
+  }
+  let tlBuilt = false, tlDrag = false, tlPending = -1, tlRaf = 0, tlLastApply = 0;
+  function buildTimeline() {
+    if (tlBuilt) return;
+    tlBuilt = true;
+    let html = '';
+    for (let k = 0; k <= Wind.SLOTS; k++) html += '<i data-k="' + k + '"' + (k === 0 ? ' class="live"' : '') + '></i>';
+    el.tlBars.innerHTML = html;
+    let ticks = '';
+    for (let h = 0; h <= Wind.HORIZON_MIN / 60; h++) {
+      const k = h * 60 / Wind.STEP_MIN;
+      ticks += '<span style="left:' + ((k + 0.5) / (Wind.SLOTS + 1) * 100).toFixed(2) + '%">' + (h === 0 ? '지금' : h + '시간') + '</span>';
+    }
+    el.tlTicks.innerHTML = ticks;
+    const pick = e => {
+      const r = el.tlBars.getBoundingClientRect();
+      const k = Math.max(0, Math.min(Wind.SLOTS, Math.floor((e.clientX - r.left) / r.width * (Wind.SLOTS + 1))));
+      requestSlot(k);
+    };
+    el.tlBars.addEventListener('pointerdown', e => { if (e.button !== undefined && e.button !== 0) return; tlDrag = true; try { el.tlBars.setPointerCapture(e.pointerId); } catch (x) { /* 무시 */ } pick(e); e.preventDefault(); });
+    el.tlBars.addEventListener('pointermove', e => { if (tlDrag) pick(e); });
+    const end = () => { tlDrag = false; flushSlot(); };
+    el.tlBars.addEventListener('pointerup', end);
+    el.tlBars.addEventListener('pointercancel', end);
+    el.tlBars.addEventListener('lostpointercapture', end);
+    el.tlBars.addEventListener('keydown', e => {
+      const base = tlPending >= 0 ? tlPending : S.slot; // 빠르게 연타해도 한 칸씩
+      if (e.key === 'ArrowRight' || e.key === 'ArrowUp') { requestSlot(Math.min(Wind.SLOTS, base + 1)); e.preventDefault(); }
+      else if (e.key === 'ArrowLeft' || e.key === 'ArrowDown') { requestSlot(Math.max(0, base - 1)); e.preventDefault(); }
+      else if (e.key === 'Home') { requestSlot(0); e.preventDefault(); }
+      else if (e.key === 'End') { requestSlot(Wind.SLOTS); e.preventDefault(); }
+    });
+    el.tlNow.addEventListener('click', () => requestSlot(0));
+  }
+  // 끌 때는 프레임당 한 번, 60 ms 에 한 번만 다시 계산 (지도 소스 갱신이 밀리지 않게)
+  function requestSlot(k) {
+    if (k === S.slot && tlPending < 0) return;
+    tlPending = k;
+    if (!tlDrag) { flushSlot(); return; } // 탭·키보드·[지금으로]는 바로 적용
+    if (!tlRaf) tlRaf = requestAnimationFrame(flushSlot);
+  }
+  function flushSlot() {
+    tlRaf = 0;
+    if (tlPending < 0) return;
+    const now = performance.now();
+    if (tlDrag && now - tlLastApply < 60) { tlRaf = requestAnimationFrame(flushSlot); return; }
+    const k = tlPending; tlPending = -1;
+    tlLastApply = now;
+    if (k !== S.slot && !applySlot(k)) toast('그 시각 예보가 아직 없어요');
+  }
+  function renderTimeline() {
+    const show = S.forecast.length > 0 && !!S.live;
+    document.body.classList.toggle('tl-on', show);
+    el.tl.hidden = !show;
+    if (!show) return;
+    buildTimeline();
+    const now = Date.now();
+    const bars = el.tlBars.children;
+    const vals = [windForBg(S.live)].concat(Wind.slots(S.forecast, now).map(p => windForBg(p)));
+    for (let k = 0; k <= Wind.SLOTS; k++) {
+      const b = bars[k], v = vals[k];
+      b.classList.toggle('on', k === S.slot);
+      if (!v) { b.className = (k === S.slot ? 'on ' : '') + 'none'; b.style.background = ''; b.title = '예보 없음'; continue; }
+      b.classList.remove('none');
+      b.style.height = (10 + 90 * Math.min(1, v.speed / 10)).toFixed(0) + '%'; // 10 m/s 에서 꽉 참
+      b.style.background = v.level.color;
+      b.title = (k === 0 ? '지금' : '+' + fmtAhead(k * Wind.STEP_MIN)) + ' · ' + v.level.name + ' ' + v.speed.toFixed(1) + ' m/s';
+    }
+    const k = S.slot;
+    el.tlWhen.textContent = k === 0 ? '지금' : '+' + fmtAhead(k * Wind.STEP_MIN);
+    el.tlClock.textContent = k === 0 ? (S.live.time ? timeLabel(S.live.time) + ' 기준 · ' + S.live.source : S.live.source)
+      : timeLabel(now + k * SLOT_MS) + ' 예측 · ' + S.forecastSource;
+    el.tlNow.hidden = k === 0;
+    el.tlBars.setAttribute('aria-valuenow', String(k));
+    el.tlBars.setAttribute('aria-valuetext', el.tlWhen.textContent);
+  }
+  // 시간이 흐르면 '+15분'의 실제 시각도 흐른다: 1분마다 선택 시각을 다시 계산
+  setInterval(() => { if (!S.forecast.length || !S.live) return; if (S.slot > 0) { if (!applySlot(S.slot)) applySlot(0); } else renderTimeline(); }, 60000);
 
   async function loadRaster() {
     if (!CONFIG.rasterManifest) return;
@@ -408,7 +529,7 @@
 
   /* ---------- 계산·표시 ---------- */
   function recompute() {
-    if (!S.bg || !S.chunks.length) { updateNow(); return; }
+    if (!S.bg || !S.chunks.length) { updateNow(); renderTimeline(); return; }
     S.computed = S.chunks.map(ch => {
       const w = Model.localWind(ch, S.bg, S.raster);
       return Object.assign({}, ch, w, { coordsFlow: w.forward ? ch.coords : ch.coords.slice().reverse() });
@@ -416,23 +537,32 @@
     S.computed._idx = Model.buildIndex(S.computed);
     if (S.particles) { S.particles.setTracks(S.computed); S.particles.start(); }
     if (window.Nav) Nav.onRecompute();
-    const fc = {
-      type: 'FeatureCollection',
-      features: S.computed.map(c => ({
-        type: 'Feature',
-        geometry: { type: 'LineString', coordinates: c.coordsFlow },
-        properties: { color: c.level.color, level: c.level.key, cls: c.cls, arrows: c.arrows, speed: +c.speed.toFixed(1), gust: Math.round(c.gust), name: c.name }
-      }))
-    };
-    S.windGeoJSON = fc;
+    // 선 기하는 길목이 바뀔 때만 다시 올리고(타일 재생성 = 비쌈), 색(단계)은 feature-state 로만 바꾼다
+    // → 예측 시각을 끌어 바꿀 때 지도 소스 재생성 없이 색만 갱신 (2,000 길목에서도 수 ms)
     const src = map.getSource('wind');
-    if (src) src.setData(fc); else map.once('style.load', () => map.getSource('wind').setData(S.windGeoJSON));
+    if (S.windChunksRef !== S.chunks) {
+      S.windChunksRef = S.chunks;
+      S.windGeoJSON = {
+        type: 'FeatureCollection',
+        features: S.computed.map((c, i) => ({ type: 'Feature', id: i, geometry: { type: 'LineString', coordinates: c.coords }, properties: { cid: c.id, cls: c.cls, name: c.name } }))
+      };
+      if (src) src.setData(S.windGeoJSON);
+    }
+    if (src) applyWindStates();
     refreshCards();
+  }
+  function applyWindStates() {
+    if (!map.getSource('wind')) return;
+    for (let i = 0; i < S.computed.length; i++) {
+      const c = S.computed[i];
+      map.setFeatureState({ source: 'wind', id: i }, { color: c.level.color, level: c.level.key });
+    }
   }
 
   function refreshCards() {
     updateNow();
     updateNext();
+    renderTimeline();
   }
 
   function currentWind() {
@@ -447,6 +577,9 @@
   function updateNow() {
     const cur = currentWind();
     S.current = cur;
+    const fc = !!(S.bg && S.bg.forecast);
+    el.nowFc.hidden = !fc;
+    el.now.classList.toggle('fc-on', fc);
     if (!cur) {
       el.nowLevel.textContent = '—'; el.nowSpeed.textContent = '–.–'; el.nowGust.textContent = '';
       el.nowDir.textContent = S.bg ? '' : '바람 데이터 기다리는 중'; el.nowTime.textContent = '';
@@ -461,7 +594,8 @@
     el.nowGust.textContent = '돌풍 ' + Math.round(cur.gust) + ' m/s';
     el.nowArrow.style.transform = 'rotate(' + Model.flowDir(S.bg) + 'deg)';
     el.nowDir.textContent = Geo.dirName(S.bg.dir) + '풍';
-    el.nowTime.textContent = timeLabel(S.bg.time) + ' 기준 · ' + S.bg.source;
+    el.nowTime.textContent = fc ? '+' + fmtAhead(S.bg.ahead) + '\n' + timeLabel(S.bg.time)
+      : timeLabel(S.bg.time) + ' 기준 · ' + S.bg.source;
     el.nowPlace.textContent = cur.place || (cur.chunk ? '이름 없는 길' : '');
   }
 
@@ -498,11 +632,13 @@
     if (ms !== 0) toastTimer = setTimeout(hideToast, ms || 4000);
   }
   function hideToast() { el.toast.hidden = true; }
-  function timeLabel(iso) {
-    if (!iso) return '';
-    const m = /T(\d{2}):(\d{2})/.exec(iso);
+  // 시각 표시 HH:MM. 숫자(ms)는 기기 시간대로, 문자열은 ISO 의 시:분 그대로(제공자 시간대)
+  function timeLabel(t) {
+    if (t === undefined || t === null || t === '') return '';
+    if (typeof t === 'number') { const d = new Date(t); return isNaN(d) ? '' : String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); }
+    const m = /T(\d{2}):(\d{2})/.exec(t);
     if (m) return m[1] + ':' + m[2];
-    const d = new Date(iso);
+    const d = new Date(t);
     return isNaN(d) ? '' : d.toTimeString().slice(0, 5);
   }
 
@@ -516,7 +652,7 @@
   }
 
   Places.configure(CONFIG.search);
-  if (window.Nav) Nav.init({ map, S, heading, toast, hideToast, defaultCenter: CONFIG.defaultCenter });
+  if (window.Nav) Nav.init({ map, S, heading, toast, hideToast, defaultCenter: CONFIG.defaultCenter, timeLabel, fmtAhead });
 
-  window.App = { S, CONFIG, map, recompute, start, heading, setCompass, shownHeading: () => shownHeading };
+  window.App = { S, CONFIG, map, recompute, start, heading, setCompass, shownHeading: () => shownHeading, applySlot, timeLabel, fmtAhead };
 })();

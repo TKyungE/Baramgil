@@ -46,20 +46,31 @@
     }
 
     // computed = 길목 + 바람 계산 결과. 바람이 길을 따라 흐르는 길목만 입자를 얹는다.
+    // 같은 길목(id)이 이미 있으면 그 위의 입자를 이어서 쓴다 → 바람(예측 시각)이 바뀌어도 흐름이 끊기지 않고 속도·방향만 바뀐다.
     function setTracks(computed) {
-      tracks = computed.filter(c => c.arrows).map(c => ({ coords: c.coordsFlow, cum: cumulative(c.coordsFlow), len: c.length, speed: c.speed, level: c.level.key }));
+      const prev = new Map();
+      for (const p of parts) { if (p.t.id !== undefined) { let a = prev.get(p.t.id); if (!a) prev.set(p.t.id, a = []); a.push(p); } }
+      tracks = computed.filter(c => c.arrows).map(c => ({ id: c.id, forward: !!c.forward, coords: c.coordsFlow, cum: cumulative(c.coordsFlow), len: c.length, speed: c.speed, level: c.level.key }));
       const total = tracks.reduce((a, t) => a + t.len, 0);
       target = Math.min(o.maxParticles, Math.max(tracks.length ? o.minParticles : 0, Math.round(total / o.mPerParticle)));
-      seed(total);
+      seed(total, prev);
     }
-    function seed(total) {
+    function seed(total, prev) {
       parts = [];
       if (!tracks.length || !total) { clear(); return; }
+      let kept = 0;
       for (const t of tracks) {
         const n = Math.max(1, Math.round(target * t.len / total));
-        for (let i = 0; i < n; i++) parts.push({ t, s: Math.random() * t.len, px: null, py: null });
+        const old = prev && prev.get(t.id);
+        for (let i = 0; i < n; i++) {
+          const q = old && old[i];
+          if (q) { // 같은 자리에서 계속: 방향이 뒤집혔으면 길이 기준으로 자리 환산
+            const s = q.t.forward === t.forward ? q.s : Math.max(0, q.t.len - q.s);
+            parts.push({ t, s: Math.min(s, t.len), px: q.px, py: q.py }); kept++;
+          } else parts.push({ t, s: Math.random() * t.len, px: null, py: null });
+        }
       }
-      clear();
+      if (!kept) clear();
     }
 
     function frame(now) {

@@ -26,6 +26,7 @@
   <div id="now" class="card now">
     <div class="row1">
       <span id="now-dot" class="dot"></span>
+      <span id="now-fc" class="fc" hidden>예측</span>
       <span id="now-level" class="level">—</span>
       <span id="now-speed" class="num">–.–</span>
       <span class="unit">m/s</span>
@@ -45,6 +46,17 @@
       <div id="next-title" class="t"></div>
       <div id="next-sub" class="s"></div>
     </div>
+  </div>
+
+  <!-- 예측 타임라인: 지금부터 6시간 뒤까지 15분 단위. 막대 = 그 시각 내 길목의 풍속(색 = 단계). 끌거나 눌러서 시각 선택 -->
+  <div id="tl" class="tl card" hidden>
+    <div class="tl-head">
+      <span id="tl-when" class="tl-when">지금</span>
+      <span id="tl-clock" class="tl-clock"></span>
+      <button id="tl-now" class="tl-reset" hidden>지금으로</button>
+    </div>
+    <div id="tl-bars" class="tl-bars" role="slider" tabindex="0" aria-label="예측 시각" aria-valuemin="0" aria-valuemax="24" aria-valuenow="0" aria-valuetext="지금"></div>
+    <div id="tl-ticks" class="tl-ticks"></div>
   </div>
 
   <div id="ctrl" class="ctrl">
@@ -87,7 +99,7 @@
   <div id="start" class="start">
     <div class="start-card">
       <div class="start-title">바람길</div>
-      <div class="start-sub">지금 서 있는 길목의 풍속·풍향, 그리고 다음 길목의 바람을 보여줍니다.</div>
+      <div class="start-sub">지금 서 있는 길목의 풍속·풍향, 다음 길목의 바람, 그리고 6시간 뒤까지 15분 단위 예측을 보여줍니다.</div>
       <button id="btn-start" class="btn primary">위치 사용 시작</button>
       <button id="btn-sim" class="btn">테스트 모드로 보기</button>
       <div class="start-note">위치는 기기 안에서만 쓰이고 저장되지 않습니다.</div>

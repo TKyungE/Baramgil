@@ -1,13 +1,16 @@
 /* 도보 길찾기 (Valhalla 공개 서버, 키 없음) + 경로 위 바람 프로필
  *
  * 경로 형식: { coords:[[lon,lat],...], distance(m), time(s), maneuvers:[{ text, length(m), begin, end, street }] }
- * 바람 프로필: 경로를 15 m 조각으로 나눠 가장 가까운 길목의 단계를 입힘 → 단계별 거리(m)와 노출 점수.
- *   노출 점수 = Σ 조각 길이 × 가중치(잔잔 0 · 주의 1 · 강풍 3 · 위험 6). 대안 경로는 이 점수로 순위를 매긴다.
+ * 바람 프로필: 경로를 15 m 조각으로 나눠 가장 가까운 길목의 단계를 입힘 → 단계별 거리(m)와 '센 바람 점수'.
+ *   센 바람 점수 = Σ 조각 길이 × 가중치(잔잔 0 · 주의 0.15 · 강풍 1 · 위험 3)
+ *     = 사실상 "강풍 이상을 몇 m 걷느냐" (위험은 3배, 주의는 동점일 때만 갈리는 정도). 평균이 아니라 길이 합.
+ *   대안 경로 순위는 이 점수 순. 단, 센 바람을 피하는 길이 가장 빠른 길보다 1.4배 넘게 오래 걸리면 기본 선택은 빠른 길.
  *   (자전거용 Headwind/BikeWind 류 앱이 바람을 고려해 경로를 고르는 것과 같은 발상, 보행자·길목 단위로.)
  */
 (function () {
   const VALHALLA = 'https://valhalla1.openstreetmap.de/route';
-  const WEIGHT = [0, 1, 3, 6];
+  const WEIGHT = [0, 0.15, 1, 3];
+  const DETOUR_MAX = 1.4; // 센 바람 피하는 길이 이 배수보다 오래 걸리면 기본 선택은 빠른 길
   const STEP = 15;
 
   async function fetchRoutes(from, to, opts) {
@@ -91,20 +94,26 @@
       else { cur = { level: pc.level.key, color: pc.level.color, coords: [pc.a, pc.b] }; features.push(cur); }
     }
     return {
-      meters: meters.map(Math.round), exposure: Math.round(exposure), pieces,
+      meters: meters.map(Math.round), exposure: Math.round(exposure), strong: Math.round(meters[2] + meters[3]), pieces,
       geojson: { type: 'FeatureCollection', features: features.map(f => ({ type: 'Feature', geometry: { type: 'LineString', coordinates: f.coords }, properties: { level: f.level, color: f.color } })) }
     };
   }
 
-  // 대안 순위: 노출 점수 낮은 순. 라벨: 가장 빠른 길 / 바람 덜 맞는 길
+  // 대안 순위. 라벨: 가장 빠른 길 / 센 바람 피하는 길. 첫 번째가 기본 선택.
   function rank(routes) {
     const fastest = routes.reduce((a, b) => (b.time < a.time ? b : a), routes[0]);
     const calmest = routes.reduce((a, b) => (b.profile.exposure < a.profile.exposure ? b : a), routes[0]);
     for (const r of routes) {
-      r.label = r === calmest && r !== fastest ? '바람 덜 맞는 길' : (r === fastest ? '가장 빠른 길' : '다른 길');
-      if (r === calmest && r === fastest) r.label = '가장 빠른 길 · 바람도 가장 적음';
+      r.label = r === calmest && r !== fastest ? '센 바람 피하는 길' : (r === fastest ? '가장 빠른 길' : '다른 길');
+      if (r === calmest && r === fastest) r.label = '가장 빠른 길 · 센 바람도 가장 적음';
     }
-    return routes.slice().sort((a, b) => (a === calmest ? -1 : b === calmest ? 1 : a.time - b.time));
+    const calmFirst = calmest !== fastest && calmest.time <= fastest.time * DETOUR_MAX;
+    const first = calmFirst ? calmest : fastest, second = calmFirst ? fastest : calmest;
+    return routes.slice().sort((a, b) => {
+      if (a === first) return -1; if (b === first) return 1;
+      if (a === second) return -1; if (b === second) return 1;
+      return a.time - b.time;
+    });
   }
 
   // 경로 위 현재 위치에서 앞으로 lookAhead(m) 안에 단계가 달라지는 첫 조각
@@ -129,5 +138,5 @@
   function fmtTime(sec) { const m = Math.max(1, Math.round(sec / 60)); return m >= 60 ? Math.floor(m / 60) + '시간 ' + (m % 60) + '분' : m + '분'; }
   function fmtDist(m) { return m >= 1000 ? (m / 1000).toFixed(1) + ' km' : Math.round(m) + ' m'; }
 
-  window.Route = { fetchRoutes, parseTrip, windProfile, rank, aheadOnRoute, fmtTime, fmtDist, WEIGHT };
+  window.Route = { fetchRoutes, parseTrip, windProfile, rank, aheadOnRoute, fmtTime, fmtDist, WEIGHT, DETOUR_MAX };
 })();
